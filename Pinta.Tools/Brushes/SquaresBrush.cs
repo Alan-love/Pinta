@@ -24,38 +24,49 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
 using Cairo;
 
 using Pinta.Core;
 
-namespace Pinta.Tools.Brushes
+namespace Pinta.Tools.Brushes;
+
+internal sealed class SquaresBrush : BasePaintBrush
 {
-	public class SquaresBrush : BasePaintBrush
+	public override string Name => Translations.GetString ("Squares");
+
+	protected override RectangleI OnMouseMove (
+		Context g,
+		ImageSurface surface,
+		BrushStrokeArgs strokeArgs)
 	{
-		private static double theta = Math.PI / 2;
+		PointI current = strokeArgs.CurrentPosition;
+		PointI last = strokeArgs.LastPosition;
 
-		public override string Name {
-			get { return Translations.GetString ("Squares"); }
-		}
+		PointI mouseDelta = current - last;
+		PointD rotated = (PointD) mouseDelta.Rotated90CCW ();
 
-		protected override Gdk.Rectangle OnMouseMove (Context g, Color strokeColor, ImageSurface surface,
-							      int x, int y, int lastX, int lastY)
-		{
-			int dx = x - lastX;
-			int dy = y - lastY;
-			double px = Math.Cos (theta) * dx - Math.Sin (theta) * dy;
-			double py = Math.Sin (theta) * dx + Math.Cos (theta) * dy;
+		g.MoveTo (
+			last.X - rotated.X,
+			last.Y - rotated.Y);
 
-			g.MoveTo (lastX - px, lastY - py);
-			g.LineTo (lastX + px, lastY + py);
-			g.LineTo (x + px, y + py);
-			g.LineTo (x - px, y - py);
-			g.LineTo (lastX - px, lastY - py);
+		g.LineTo (
+			last.X + rotated.X,
+			last.Y + rotated.Y);
 
-			g.StrokePreserve ();
+		g.LineTo (
+			current.X + rotated.X,
+			current.Y + rotated.Y);
 
-			return g.StrokeExtents ().ToGdkRectangle ();
-		}
+		g.LineTo (
+			current.X - rotated.X,
+			current.Y - rotated.Y);
+
+		g.LineTo (
+			last.X - rotated.X,
+			last.Y - rotated.Y);
+
+		g.StrokePreserve ();
+
+		return g.StrokeExtents ().ToInt ();
 	}
 }

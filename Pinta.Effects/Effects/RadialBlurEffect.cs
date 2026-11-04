@@ -8,164 +8,143 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class RadialBlurEffect : BaseEffect
 {
-	public class RadialBlurEffect : BaseEffect
+	public override string Icon => Resources.Icons.EffectsBlursRadialBlur;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Name => Translations.GetString ("Radial Blur");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Blurs");
+
+	public RadialBlurData Data => (RadialBlurData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public RadialBlurEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Blurs.RadialBlur.png"; }
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new RadialBlurData ();
+	}
+
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
+
+	// Algorithm Code Ported From PDN
+
+	private static PointI Rotated (PointI f, int fr)
+	{
+		//sin(x) ~~ x
+		//cos(x)~~ 1 - x^2/2
+		return new (
+			X: f.X - ((f.Y >> 8) * fr >> 8) - ((f.X >> 14) * (fr * fr >> 11) >> 8),
+			Y: f.Y + ((f.X >> 8) * fr >> 8) - ((f.Y >> 14) * (fr * fr >> 11) >> 8)
+		);
+	}
+
+	private sealed record RadialBlurSettings (
+		Size canvasSize,
+		int fcx,
+		int fcy,
+		int n,
+		int fsr);
+
+	private RadialBlurSettings CreateSettings (ImageSurface source)
+	{
+		var offset = Data.Offset;
+		int quality = Data.Quality;
+		Size sourceSize = source.GetSize ();
+		int n = quality * quality * (30 + quality * quality);
+		int fr = ((int) (Data.Angle.Degrees * Math.PI * 65536.0 / 181.0));
+		return new (
+			canvasSize: sourceSize,
+			fcx: (sourceSize.Width << 15) + (int) (offset.Horizontal * (sourceSize.Width << 15)),
+			fcy: (sourceSize.Height << 15) + (int) (offset.Vertical * (sourceSize.Height << 15)),
+			n: n,
+			fsr: fr / n);
+	}
+
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI rect)
+	{
+		if (Data.Angle.Degrees == 0) // Copy src to dest
+			return;
+
+		RadialBlurSettings settings = CreateSettings (source);
+
+		ReadOnlySpan<ColorBgra> sourceData = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
+
+		foreach (var pixel in Tiling.GeneratePixelOffsets (rect, settings.canvasSize))
+			destinationData[pixel.memoryOffset] = GetFinalPixelColor (
+				settings,
+				sourceData,
+				pixel);
+	}
+
+	private static ColorBgra GetFinalPixelColor (
+		RadialBlurSettings settings,
+		ReadOnlySpan<ColorBgra> sourceData,
+		PixelOffset pixel)
+	{
+		ColorBgra sourcePixel = sourceData[pixel.memoryOffset];
+
+		PointI f = new (
+			X: (pixel.coordinates.X << 16) - settings.fcx,
+			Y: (pixel.coordinates.Y << 16) - settings.fcy);
+
+		ColorBgra.Blender blender = new ();
+		blender += sourcePixel;
+
+		PointI o1 = f;
+		PointI o2 = f;
+
+		for (int i = 0; i < settings.n; ++i) {
+
+			o1 = Rotated (o1, settings.fsr);
+			o2 = Rotated (o2, -settings.fsr);
+
+			PointI p1 = new (
+				X: o1.X + settings.fcx + 32768 >> 16,
+				Y: o1.Y + settings.fcy + 32768 >> 16);
+
+			if (p1.X > 0 && p1.Y > 0 && p1.X < settings.canvasSize.Width && p1.Y < settings.canvasSize.Height)
+				blender += sourceData[p1.Y * settings.canvasSize.Width + p1.X];
+
+			PointI p2 = new (
+				X: o2.X + settings.fcx + 32768 >> 16,
+				Y: o2.Y + settings.fcy + 32768 >> 16);
+
+			if (p2.X > 0 && p2.Y > 0 && p2.X < settings.canvasSize.Width && p2.Y < settings.canvasSize.Height)
+				blender += sourceData[p2.Y * settings.canvasSize.Width + p2.X];
 		}
 
-		public override string Name {
-			get { return Translations.GetString ("Radial Blur"); }
-		}
+		return blender.Blend ();
+	}
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	public sealed class RadialBlurData : EffectData
+	{
+		[Caption ("Angle")]
+		public DegreesAngle Angle { get; set; } = new (2);
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Blurs"); }
-		}
+		[Caption ("Offset")]
+		public CenterOffset<double> Offset { get; set; } = new (0, 0);
 
-		public RadialBlurData Data { get { return (RadialBlurData) EffectData!; } } // NRT - Set in constructor
+		[Caption ("Quality")]
+		[Hint ("Use low quality for previews, small images, and small angles.  Use high quality for final quality, large images, and large angles.")]
+		[MinimumValue (1), MaximumValue (5)]
+		public int Quality { get; set; } = 2;
 
-		public RadialBlurEffect ()
-		{
-			EffectData = new RadialBlurData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		#region Algorithm Code Ported From PDN
-		private static void Rotate (ref int fx, ref int fy, int fr)
-		{
-			int cx = fx;
-			int cy = fy;
-
-			//sin(x) ~~ x
-			//cos(x)~~ 1 - x^2/2
-			fx = cx - ((cy >> 8) * fr >> 8) - ((cx >> 14) * (fr * fr >> 11) >> 8);
-			fy = cy + ((cx >> 8) * fr >> 8) - ((cy >> 14) * (fr * fr >> 11) >> 8);
-		}
-
-		public unsafe override void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			if (Data.Angle == 0) {
-				// Copy src to dest
-				return;
-			}
-
-			int w = dst.Width;
-			int h = dst.Height;
-			int fcx = (w << 15) + (int) (Data.Offset.X * (w << 15));
-			int fcy = (h << 15) + (int) (Data.Offset.Y * (h << 15));
-
-			int n = (Data.Quality * Data.Quality) * (30 + Data.Quality * Data.Quality);
-
-			int fr = (int) (Data.Angle * Math.PI * 65536.0 / 181.0);
-
-			foreach (Gdk.Rectangle rect in rois) {
-				for (int y = rect.Top; y <= rect.GetBottom (); ++y) {
-					ColorBgra* dstPtr = dst.GetPointAddressUnchecked (rect.Left, y);
-					ColorBgra* srcPtr = src.GetPointAddressUnchecked (rect.Left, y);
-
-					for (int x = rect.Left; x <= rect.GetRight (); ++x) {
-						int fx = (x << 16) - fcx;
-						int fy = (y << 16) - fcy;
-
-						int fsr = fr / n;
-
-						int sr = 0;
-						int sg = 0;
-						int sb = 0;
-						int sa = 0;
-						int sc = 0;
-
-						sr += srcPtr->R * srcPtr->A;
-						sg += srcPtr->G * srcPtr->A;
-						sb += srcPtr->B * srcPtr->A;
-						sa += srcPtr->A;
-						++sc;
-
-						int ox1 = fx;
-						int ox2 = fx;
-						int oy1 = fy;
-						int oy2 = fy;
-
-						ColorBgra* src_dataptr = (ColorBgra*) src.DataPtr;
-						int src_width = src.Width;
-
-						for (int i = 0; i < n; ++i) {
-							Rotate (ref ox1, ref oy1, fsr);
-							Rotate (ref ox2, ref oy2, -fsr);
-
-							int u1 = ox1 + fcx + 32768 >> 16;
-							int v1 = oy1 + fcy + 32768 >> 16;
-
-							if (u1 > 0 && v1 > 0 && u1 < w && v1 < h) {
-								ColorBgra* sample = src.GetPointAddressUnchecked (src_dataptr, src_width, u1, v1);
-
-								sr += sample->R * sample->A;
-								sg += sample->G * sample->A;
-								sb += sample->B * sample->A;
-								sa += sample->A;
-								++sc;
-							}
-
-							int u2 = ox2 + fcx + 32768 >> 16;
-							int v2 = oy2 + fcy + 32768 >> 16;
-
-							if (u2 > 0 && v2 > 0 && u2 < w && v2 < h) {
-								ColorBgra* sample = src.GetPointAddressUnchecked (src_dataptr, src_width, u2, v2);
-
-								sr += sample->R * sample->A;
-								sg += sample->G * sample->A;
-								sb += sample->B * sample->A;
-								sa += sample->A;
-								++sc;
-							}
-						}
-
-						if (sa > 0) {
-							*dstPtr = ColorBgra.FromBgra (
-							    Utility.ClampToByte (sb / sa),
-							    Utility.ClampToByte (sg / sa),
-							    Utility.ClampToByte (sr / sa),
-							    Utility.ClampToByte (sa / sc));
-						} else {
-							dstPtr->Bgra = 0;
-						}
-
-						++dstPtr;
-						++srcPtr;
-					}
-				}
-			}
-		}
-		#endregion
-
-		public class RadialBlurData : EffectData
-		{
-			[Caption ("Angle")]
-			public Double Angle = 2;
-
-			[Caption ("Offset")]
-			public PointD Offset = new PointD (0, 0);
-
-			[Caption ("Quality"), MinimumValue (1), MaximumValue (5)]
-			[Hint ("Use low quality for previews, small images, and small angles.  Use high quality for final quality, large images, and large angles.")]
-			public int Quality = 2;
-
-			[Skip]
-			public override bool IsDefault { get { return Angle == 0; } }
-		}
+		[Skip]
+		public override bool IsDefault => Angle.Degrees == 0;
 	}
 }

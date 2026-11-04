@@ -8,119 +8,117 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class PixelateEffect : BaseEffect
 {
-	public class PixelateEffect : BaseEffect
+	public override string Icon => Resources.Icons.EffectsDistortPixelate;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Name => Translations.GetString ("Pixelate");
+
+	public override bool IsConfigurable => true;
+
+	public PixelateData Data => (PixelateData) EffectData!;
+
+	public override string EffectMenuCategory => Translations.GetString ("Distort");
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public PixelateEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Distort.Pixelate.png"; }
-		}
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new PixelateData ();
+	}
 
-		public override string Name {
-			get { return Translations.GetString ("Pixelate"); }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	#region Algorithm Code Ported From PDN
+	private static ColorBgra ComputeCellColor (
+		int x,
+		int y,
+		ReadOnlySpan<ColorBgra> src_data,
+		int cellSize,
+		RectangleI srcBounds)
+	{
+		RectangleI cell = GetCellBox (x, y, cellSize).Intersect (srcBounds);
 
-		public PixelateData Data {
-			get { return (PixelateData) EffectData!; } // NRT - Set in constructor
-		}
+		int left = cell.Left;
+		int right = cell.Right;
+		int bottom = cell.Bottom;
+		int top = cell.Top;
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Distort"); }
-		}
+		ColorBgra colorTopLeft = src_data[top * srcBounds.Width + left];
+		ColorBgra colorTopRight = src_data[top * srcBounds.Width + right];
+		ColorBgra colorBottomLeft = src_data[bottom * srcBounds.Width + left];
+		ColorBgra colorBottomRight = src_data[bottom * srcBounds.Width + right];
 
-		public PixelateEffect ()
-		{
-			EffectData = new PixelateData ();
-		}
+		return ColorBgra.BlendColors4W16IP (
+			colorTopLeft, 16384,
+			colorTopRight, 16384,
+			colorBottomLeft, 16384,
+			colorBottomRight, 16384);
+	}
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		#region Algorithm Code Ported From PDN
-		private ColorBgra ComputeCellColor (int x, int y, ImageSurface src, int cellSize, Gdk.Rectangle srcBounds)
-		{
-			Gdk.Rectangle cell = GetCellBox (x, y, cellSize);
-			cell.Intersect (srcBounds);
-
-			int left = cell.Left;
-			int right = cell.GetRight ();
-			int bottom = cell.GetBottom ();
-			int top = cell.Top;
-
-			ColorBgra colorTopLeft = src.GetColorBgraUnchecked (left, top).ToStraightAlpha ();
-			ColorBgra colorTopRight = src.GetColorBgraUnchecked (right, top).ToStraightAlpha ();
-			ColorBgra colorBottomLeft = src.GetColorBgraUnchecked (left, bottom).ToStraightAlpha ();
-			ColorBgra colorBottomRight = src.GetColorBgraUnchecked (right, bottom).ToStraightAlpha ();
-
-			ColorBgra c = ColorBgra.BlendColors4W16IP (colorTopLeft, 16384, colorTopRight, 16384, colorBottomLeft, 16384, colorBottomRight, 16384);
-
-			return c.ToPremultipliedAlpha ();
-		}
-
-		private Gdk.Rectangle GetCellBox (int x, int y, int cellSize)
-		{
-			int widthBoxNum = x % cellSize;
-			int heightBoxNum = y % cellSize;
-			var leftUpper = new Gdk.Point (x - widthBoxNum, y - heightBoxNum);
-
-			var returnMe = new Gdk.Rectangle (leftUpper, new Gdk.Size (cellSize, cellSize));
-
-			return returnMe;
-		}
+	private static RectangleI GetCellBox (int x, int y, int cellSize)
+	{
+		int widthBoxNum = x % cellSize;
+		int heightBoxNum = y % cellSize;
+		PointI leftUpper = new (x - widthBoxNum, y - heightBoxNum);
+		return new (leftUpper, new Size (cellSize, cellSize));
+	}
 
 
-		unsafe public override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			var cellSize = Data.CellSize;
+	protected override void Render (
+		ImageSurface source,
+		ImageSurface destination,
+		RectangleI roi)
+	{
+		var cellSize = Data.CellSize;
 
-			Gdk.Rectangle src_bounds = src.GetBounds ();
-			Gdk.Rectangle dest_bounds = dest.GetBounds ();
+		RectangleI src_bounds = source.GetBounds ();
+		RectangleI dest_bounds = destination.GetBounds ();
 
-			foreach (var rect in rois) {
-				for (int y = rect.Top; y <= rect.GetBottom (); ++y) {
-					int yEnd = y + 1;
+		var src_data = source.GetReadOnlyPixelData ();
+		var dst_data = destination.GetPixelData ();
 
-					for (int x = rect.Left; x <= rect.GetRight (); ++x) {
-						var cellRect = GetCellBox (x, y, cellSize);
-						cellRect.Intersect (dest_bounds);
-						var color = ComputeCellColor (x, y, src, cellSize, src_bounds);
+		for (int y = roi.Top; y <= roi.Bottom; ++y) {
+			int yEnd = y + 1;
 
-						int xEnd = Math.Min (rect.GetRight (), cellRect.GetRight ());
-						yEnd = Math.Min (rect.GetBottom (), cellRect.GetBottom ());
+			for (int x = roi.Left; x <= roi.Right; ++x) {
+				RectangleI cellRect = GetCellBox (x, y, cellSize).Intersect (dest_bounds);
+				ColorBgra color = ComputeCellColor (x, y, src_data, cellSize, src_bounds);
 
-						for (int y2 = y; y2 <= yEnd; ++y2) {
-							ColorBgra* ptr = dest.GetPointAddressUnchecked (x, y2);
+				int xEnd = Math.Min (roi.Right, cellRect.Right);
+				yEnd = Math.Min (roi.Bottom, cellRect.Bottom);
 
-							for (int x2 = x; x2 <= xEnd; ++x2) {
-								ptr->Bgra = color.Bgra;
-								++ptr;
-							}
-						}
+				for (int y2 = y; y2 <= yEnd; ++y2) {
+					var dst_row = dst_data.Slice (y2 * dest_bounds.Width, dest_bounds.Width);
 
-						x = xEnd;
-					}
-
-					y = yEnd;
+					for (int x2 = x; x2 <= xEnd; ++x2)
+						dst_row[x2] = color;
 				}
+
+				x = xEnd;
 			}
+
+			y = yEnd;
 		}
-		#endregion
 	}
+	#endregion
+}
 
 
-	public class PixelateData : EffectData
-	{
-		[Caption ("Cell Size"), MinimumValue (1), MaximumValue (100)]
-		public int CellSize = 2;
-	}
+public sealed class PixelateData : EffectData
+{
+	[Caption ("Cell Size")]
+	[MinimumValue (1), MaximumValue (100)]
+	public int CellSize { get; set; } = 2;
 }

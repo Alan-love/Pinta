@@ -24,46 +24,37 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
+namespace Pinta.Core;
 
-namespace Pinta.Core
+public sealed class AddLayerHistoryItem : BaseHistoryItem
 {
-	public class AddLayerHistoryItem : BaseHistoryItem
+	private readonly int layer_index;
+	private UserLayer? layer;
+
+	public AddLayerHistoryItem (string icon, string text, int newLayerIndex) : base (icon, text)
 	{
-		private int layer_index;
-		private UserLayer? layer;
+		layer_index = newLayerIndex;
+	}
 
-		public AddLayerHistoryItem (string icon, string text, int newLayerIndex) : base (icon, text)
-		{
-			layer_index = newLayerIndex;
-		}
+	public override void Undo ()
+	{
+		var doc = PintaCore.Workspace.ActiveDocument;
 
-		public override void Undo ()
-		{
-			var doc = PintaCore.Workspace.ActiveDocument;
+		// Store the layer for "redo"
+		layer = doc.Layers[layer_index];
 
-			// Store the layer for "redo"
-			layer = doc.Layers[layer_index];
+		doc.Layers.DeleteLayer (layer_index);
+	}
 
-			doc.Layers.DeleteLayer (layer_index, false);
-		}
+	public override void Redo ()
+	{
+		var doc = PintaCore.Workspace.ActiveDocument;
 
-		public override void Redo ()
-		{
-			var doc = PintaCore.Workspace.ActiveDocument;
+		doc.Layers.Insert (layer!, layer_index); // NRT - layer is set by Undo()
 
-			doc.Layers.Insert (layer!, layer_index); // NRT - layer is set by Undo()
+		// Make new layer the current layer
+		doc.Layers.SetCurrentUserLayer (layer!);
 
-			// Make new layer the current layer
-			doc.Layers.SetCurrentUserLayer (layer!);
-
-			layer = null;
-		}
-
-		public override void Dispose ()
-		{
-			if (layer != null)
-				(layer.Surface as IDisposable).Dispose ();
-		}
+		layer = null;
 	}
 }

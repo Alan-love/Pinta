@@ -31,51 +31,67 @@ using System.Globalization;
 using System.IO;
 using Cairo;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class GimpPalette : IPaletteLoader, IPaletteSaver
 {
-	public class GimpPalette : IPaletteLoader, IPaletteSaver
+	public List<Color> Load (Gio.File file)
 	{
-		public List<Color> Load (string fileName)
-		{
-			List<Color> colors = new List<Color> ();
-			StreamReader reader = new StreamReader (fileName);
-			string? line = reader.ReadLine ();
+		List<Color> colors = [];
+		using GioStream stream = new (file.Read (null));
+		using StreamReader reader = new (stream);
+		string? line = reader.ReadLine ();
 
-			if (line is null || !line.StartsWith ("GIMP"))
-				throw new InvalidDataException ("Not a valid GIMP palette file.");
+		if (line is null || !line.StartsWith ("GIMP"))
+			throw new InvalidDataException ("Not a valid GIMP palette file.");
 
-			// skip everything until the first color
-			while (!char.IsDigit (line[0]))
-				line = reader.ReadLine ()!; // NRT - This assumes a valid formed file
+		// skip everything until the first color
+		while (!char.IsDigit (line[0]))
+			line = reader.ReadLine ()!; // NRT - This assumes a valid formed file
 
-			// then read the palette
-			do {
-				if (line.IndexOf ('#') == 0)
-					continue;
+		// then read the palette
+		do {
+			if (line.StartsWith ('#'))
+				continue;
 
-				string[] split = line.Split ((char[]?) null, StringSplitOptions.RemoveEmptyEntries);
-				double r = int.Parse (split[0]) / 255f;
-				double g = int.Parse (split[1]) / 255f;
-				double b = int.Parse (split[2]) / 255f;
-				colors.Add (new Color (r, g, b));
-			} while ((line = reader.ReadLine ()) != null);
+			var finalColor = ReadColor (line);
+			colors.Add (finalColor);
+		} while ((line = reader.ReadLine ()) != null);
 
-			return colors;
-		}
-
-		public void Save (List<Color> colors, string fileName)
-		{
-			StreamWriter writer = new StreamWriter (fileName);
-			writer.WriteLine ("GIMP Palette");
-			writer.WriteLine ("Name: Pinta Created {0}", DateTime.Now.ToString (DateTimeFormatInfo.InvariantInfo.RFC1123Pattern));
-			writer.WriteLine ("#");
-
-			foreach (Color color in colors) {
-				writer.WriteLine ("{0,3} {1,3} {2,3} Untitled", (int) (color.R * 255), (int) (color.G * 255), (int) (color.B * 255));
-			}
-
-			writer.Close ();
-		}
+		return colors;
 	}
+
+	private static Color ReadColor (string line)
+	{
+		string[] split = line.Split ((char[]?) null, StringSplitOptions.RemoveEmptyEntries);
+		double r = int.Parse (split[0]) / 255f;
+		double g = int.Parse (split[1]) / 255f;
+		double b = int.Parse (split[2]) / 255f;
+		return new Color (r, g, b);
+	}
+
+	public void Save (IReadOnlyList<Color> colors, Gio.File file)
+	{
+		using GioStream stream = new (file.Replace ());
+		using StreamWriter writer = new (stream);
+
+		writer.WriteLine ("GIMP Palette");
+		writer.WriteLine ("Name: Pinta Created {0}", DateTime.Now.ToString (DateTimeFormatInfo.InvariantInfo.RFC1123Pattern));
+		writer.WriteLine ("#");
+
+		for (var i = 0; i < colors.Count; i++)
+			writer.WriteLine (RepresentColor (colors[i], $"Untitled_{i}"));
+
+		writer.Close ();
+	}
+
+	private static string RepresentColor (Color color, string colorName)
+		=> string.Format (
+			"{0,3} {1,3} {2,3} {3}",
+			(int) (color.R * 255),
+			(int) (color.G * 255),
+			(int) (color.B * 255),
+			colorName
+		);
 }
 

@@ -24,89 +24,23 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using System.ComponentModel;
+using System.Threading.Tasks;
+using Mono.Addins.Localization;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta
+namespace Pinta;
+
+internal static class EffectHelper
 {
-
-	public static class EffectHelper
-	{
-		/// <summary>
-		/// Launchs an effect dialog.
-		/// </summary>
-		/// <param name="localizer">
-		/// The localizer for the effect add-in. This is used to fetch translations for the
-		/// strings in the dialog.
-		/// </param>
-		// TODO-GTK3 (addins)
-#if false
-		public static bool LaunchSimpleEffectDialog (BaseEffect effect, AddinLocalizer localizer)
-		{
-			return LaunchSimpleEffectDialog (effect, new AddinLocalizerWrapper (localizer));
-		}
-#endif
-
-		/// <summary>
-		/// Launchs an effect dialog using Pinta's translation template.
-		/// </summary>
-		internal static bool LaunchSimpleEffectDialog (BaseEffect effect)
-		{
-			return LaunchSimpleEffectDialog (effect, new PintaLocalizer ());
-		}
-
-		/// <summary>
-		/// Helper function for the above methods. The IAddinLocalizer provides a generic way to
-		/// get translated strings both for Pinta's effects and for effect add-ins.
-		/// </summary>
-		private static bool LaunchSimpleEffectDialog (BaseEffect effect, IAddinLocalizer localizer)
-		{
-			if (effect == null)
-				throw new ArgumentNullException ("effect");
-
-			if (effect.EffectData == null)
-				throw new ArgumentException ("effect.EffectData is null.");
-
-			using (var dialog = new SimpleEffectDialog (effect.Name,
-												 PintaCore.Resources.GetIcon (effect.Icon),
-												 effect.EffectData, localizer)) {
-				// Hookup event handling for live preview.
-				dialog.EffectDataChanged += (o, e) => {
-					if (effect.EffectData != null)
-						effect.EffectData.FirePropertyChanged (e.PropertyName);
-				};
-
-				int response = dialog.Run ();
-
-				bool ret = false;
-				if (response == (int) Gtk.ResponseType.Ok && effect.EffectData != null)
-					ret = !effect.EffectData.IsDefault;
-
-				return ret;
-			}
-		}
-
-		/// <summary>
-		/// Wrapper around the AddinLocalizer of an add-in.
-		/// </summary>
-		// TODO-GTK3 (addins)
-#if false
-		private class AddinLocalizerWrapper : IAddinLocalizer
-		{
-			private AddinLocalizer localizer;
-
-			public AddinLocalizerWrapper (AddinLocalizer localizer)
-			{
-				this.localizer = localizer;
-			}
-
-			public string GetString (string msgid)
-			{
-				return localizer.GetString (msgid);
-			}
-		};
-#endif
-	}
+#pragma warning disable CS0618 // Using obsolete method
+	/// <summary>
+	/// Launch an effect dialog using Pinta's translation template.
+	/// </summary>
+	internal static Task<bool> LaunchSimpleEffectDialog (this IChromeService chrome, BaseEffect effect, IWorkspaceService workspace)
+		=> chrome.LaunchSimpleEffectDialog (
+			chrome.MainWindow,
+			effect,
+			new PintaLocalizer (),
+			workspace);
+#pragma warning restore CS0618
 }

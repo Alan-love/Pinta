@@ -8,113 +8,150 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Collections.Immutable;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class MotionBlurEffect : BaseEffect
 {
-	public class MotionBlurEffect : BaseEffect
+	public override string Icon
+		=> Resources.Icons.EffectsBlursMotionBlur;
+
+	public sealed override bool IsTileable
+		=> true;
+
+	public override string Name
+		=> Translations.GetString ("Motion Blur");
+
+	public override bool IsConfigurable
+		=> true;
+
+	public override string EffectMenuCategory
+		=> Translations.GetString ("Blurs");
+
+	public MotionBlurData Data
+		=> (MotionBlurData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public MotionBlurEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Blurs.MotionBlur.png"; }
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new MotionBlurData ();
+	}
+
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
+
+	// Algorithm Code Ported From PDN
+
+	private sealed record MotionBlurSettings (
+		Size canvasSize,
+		ImmutableArray<PointD> points);
+
+	private MotionBlurSettings CreateSettings (ImageSurface src)
+	{
+		MotionBlurData data = Data;
+
+		RadiansAngle theta = data.Angle.ToRadians () + new RadiansAngle (Math.PI);
+
+		double alpha = data.Distance;
+
+		PointD start = PointD.Zero;
+		PointD end = new (
+			X: (float) alpha * Math.Cos (theta.Radians),
+			Y: (float) (-alpha * Math.Sin (theta.Radians)));
+
+		if (data.Centered) {
+			start = new (-end.X / 2.0f, -end.Y / 2.0f);
+			end = new (end.X / 2.0f, end.Y / 2.0f);
 		}
 
-		public override string Name {
-			get { return Translations.GetString ("Motion Blur"); }
-		}
-
-		public override bool IsConfigurable {
-			get { return true; }
-		}
-
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Blurs"); }
-		}
-
-		public MotionBlurData Data { get { return (MotionBlurData) EffectData!; } } // NRT - Set in constructor
-
-		public MotionBlurEffect ()
-		{
-			EffectData = new MotionBlurData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		#region Algorithm Code Ported From PDN
-		public unsafe override void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			PointD start = new PointD (0, 0);
-			double theta = ((double) (Data.Angle + 180) * 2 * Math.PI) / 360.0;
-			double alpha = (double) Data.Distance;
-			PointD end = new PointD ((float) alpha * Math.Cos (theta), (float) (-alpha * Math.Sin (theta)));
-
-			if (Data.Centered) {
-				start.X = -end.X / 2.0f;
-				start.Y = -end.Y / 2.0f;
-
-				end.X /= 2.0f;
-				end.Y /= 2.0f;
-			}
-
-			PointD[] points = new PointD[((1 + Data.Distance) * 3) / 2];
-
-			if (points.Length == 1) {
-				points[0] = new PointD (0, 0);
-			} else {
-				for (int i = 0; i < points.Length; ++i) {
-					float frac = (float) i / (float) (points.Length - 1);
-					points[i] = Utility.Lerp (start, end, frac);
-				}
-			}
-
-			ColorBgra* samples = stackalloc ColorBgra[points.Length];
-
-			ColorBgra* src_dataptr = (ColorBgra*) src.DataPtr;
-			int src_width = src.Width;
-			int src_height = src.Height;
-
-			foreach (Gdk.Rectangle rect in rois) {
-
-				for (int y = rect.Top; y <= rect.GetBottom (); ++y) {
-					ColorBgra* dstPtr = dst.GetPointAddressUnchecked (rect.Left, y);
-
-					for (int x = rect.Left; x <= rect.GetRight (); ++x) {
-						int sampleCount = 0;
-
-						for (int j = 0; j < points.Length; ++j) {
-							PointD pt = new PointD (points[j].X + (float) x, points[j].Y + (float) y);
-
-							if (pt.X >= 0 && pt.Y >= 0 && pt.X <= (src_width - 1) && pt.Y <= (src_height - 1)) {
-								samples[sampleCount] = src.GetBilinearSample (src_dataptr, src_width, src_height, (float) pt.X, (float) pt.Y);
-								++sampleCount;
-							}
-						}
-
-						*dstPtr = ColorBgra.Blend (samples, sampleCount);
-						++dstPtr;
-					}
-				}
+		int numberOfPoints = (1 + data.Distance) * 3 / 2;
+		var points = ImmutableArray.CreateBuilder<PointD> (numberOfPoints);
+		points.Count = numberOfPoints;
+		if (numberOfPoints == 1) {
+			points[0] = new PointD (0, 0);
+		} else {
+			for (int i = 0; i < numberOfPoints; ++i) {
+				float frac = i / (float) (numberOfPoints - 1);
+				points[i] = Utility.Lerp (start, end, frac);
 			}
 		}
-		#endregion
 
-		public class MotionBlurData : EffectData
-		{
-			[Skip]
-			public override bool IsDefault { get { return Distance == 0; } }
+		return new (
+			canvasSize: src.GetSize (),
+			points: points.MoveToImmutable ());
+	}
 
-			[Caption ("Angle")]
-			public double Angle = 25;
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
+	{
+		MotionBlurSettings settings = CreateSettings (source);
 
-			[Caption ("Distance"), MinimumValue (1), MaximumValue (200)]
-			public int Distance = 10;
+		Span<ColorBgra> samples = stackalloc ColorBgra[settings.points.Length];
 
-			[Caption ("Centered")]
-			public bool Centered = true;
+		ReadOnlySpan<ColorBgra> sourceData = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
+
+		foreach (var pixel in Tiling.GeneratePixelOffsets (roi, settings.canvasSize))
+			destinationData[pixel.memoryOffset] = GetFinalPixelColor (
+				settings,
+				source,
+				sourceData,
+				samples,
+				pixel);
+	}
+
+	private static ColorBgra GetFinalPixelColor (
+		MotionBlurSettings settings,
+		ImageSurface source,
+		ReadOnlySpan<ColorBgra> sourceData,
+		Span<ColorBgra> samples,
+		in PixelOffset pixel)
+	{
+		int sampleCount = 0;
+
+		for (int j = 0; j < settings.points.Length; ++j) {
+
+			PointD pt = new (
+				settings.points[j].X + pixel.coordinates.X,
+				settings.points[j].Y + pixel.coordinates.Y);
+
+			if (pt.X < 0 || pt.Y < 0 || pt.X > (settings.canvasSize.Width - 1) || pt.Y > (settings.canvasSize.Height - 1))
+				continue;
+
+			samples[sampleCount] = source.GetBilinearSample (
+				sourceData,
+				settings.canvasSize.Width,
+				settings.canvasSize.Height,
+				(float) pt.X,
+				(float) pt.Y);
+
+			++sampleCount;
 		}
+
+		return ColorBgra.Blend (
+			colors: samples[..sampleCount],
+			fallback: ColorBgra.Transparent);
+	}
+
+	public sealed class MotionBlurData : EffectData
+	{
+		[Skip]
+		public override bool IsDefault => Distance == 0;
+
+		[Caption ("Angle")]
+		public DegreesAngle Angle { get; set; } = new (25);
+
+		[Caption ("Distance")]
+		[MinimumValue (1), MaximumValue (200)]
+		public int Distance { get; set; } = 10;
+
+		[Caption ("Centered")]
+		public bool Centered { get; set; } = true;
 	}
 }

@@ -1,21 +1,21 @@
-// 
+//
 // FileActions.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,111 +25,144 @@
 // THE SOFTWARE.
 
 using System;
-using System.Collections.Generic;
-using System.IO;
-using Gdk;
-using Gtk;
+using System.Linq;
+using System.Threading.Tasks;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class FileActions
 {
-	public class FileActions
+	public Command New { get; }
+	public Command NewScreenshot { get; }
+	public Command Open { get; }
+	public Command Close { get; }
+	public Command Save { get; }
+	public Command SaveAs { get; }
+	public Command Print { get; }
+
+	public event EventHandler<ModifyCompressionEventArgs>? ModifyCompression;
+
+	/// <remarks>
+	/// The returned value is
+	/// <see langword="true" /> if was save succeeded
+	/// and
+	/// <see langword="false" /> otherwise
+	/// </remarks>
+	public event AsyncEventHandler<FileActions, DocumentSaveEventArgs>.Returning<bool>? SaveDocument;
+
+	private readonly SystemManager system;
+	private readonly AppActions app;
+	public FileActions (SystemManager system, AppActions app)
 	{
-		public Command New { get; private set; }
-		public Command NewScreenshot { get; private set; }
-		public Command Open { get; private set; }
-		public Command Close { get; private set; }
-		public Command Save { get; private set; }
-		public Command SaveAs { get; private set; }
-		public Command Print { get; private set; }
+		New = new Command (
+			"new",
+			Translations.GetString ("New..."),
+			null,
+			Resources.StandardIcons.DocumentNew,
+			shortcuts: ["<Primary>N"]
+		) { ShortLabel = Translations.GetString ("New") };
 
-		public event EventHandler<ModifyCompressionEventArgs>? ModifyCompression;
-		public event EventHandler<DocumentCancelEventArgs>? SaveDocument;
+		NewScreenshot = new Command (
+			"NewScreenshot",
+			Translations.GetString ("New Screenshot..."),
+			null,
+			Resources.StandardIcons.ViewFullscreen);
 
-		public FileActions ()
-		{
-			New = new Command ("new", Translations.GetString ("New..."), null, Resources.StandardIcons.DocumentNew);
-			NewScreenshot = new Command ("NewScreenshot", Translations.GetString ("New Screenshot..."), null, Resources.StandardIcons.ViewFullscreen);
-			Open = new Command ("open", Translations.GetString ("Open..."), null, Resources.StandardIcons.DocumentOpen);
+		Open = new Command (
+			"open",
+			Translations.GetString ("Open..."),
+			null,
+			Resources.StandardIcons.DocumentOpen,
+			shortcuts: ["<Primary>O"]
+		) { ShortLabel = Translations.GetString ("Open") };
 
-			Close = new Command ("close", Translations.GetString ("Close"), null, Resources.StandardIcons.WindowClose);
-			Save = new Command ("save", Translations.GetString ("Save"), null, Resources.StandardIcons.DocumentSave);
-			SaveAs = new Command ("saveAs", Translations.GetString ("Save As..."), null, Resources.StandardIcons.DocumentSaveAs);
-			Print = new Command ("print", Translations.GetString ("Print"), null, Resources.StandardIcons.DocumentPrint);
+		Close = new Command (
+			"close",
+			Translations.GetString ("Close"),
+			null,
+			Resources.StandardIcons.WindowClose,
+			shortcuts: ["<Primary>W"]);
 
-			New.ShortLabel = Translations.GetString ("New");
-			Open.ShortLabel = Translations.GetString ("Open");
-			Open.IsImportant = true;
-			Save.IsImportant = true;
-		}
+		Save = new Command (
+			"save",
+			Translations.GetString ("Save"),
+			null,
+			Resources.StandardIcons.DocumentSave,
+			shortcuts: ["<Primary>S"]);
 
-		#region Initialization
-		public void RegisterActions (Gtk.Application app, GLib.Menu menu)
-		{
-			app.AddAccelAction (New, "<Primary>N");
-			menu.AppendItem (New.CreateMenuItem ());
+		SaveAs = new Command (
+			"saveAs",
+			Translations.GetString ("Save As..."),
+			null,
+			Resources.StandardIcons.DocumentSaveAs,
+			shortcuts: ["<Primary><Shift>S"]);
 
-			app.AddAction (NewScreenshot);
-			menu.AppendItem (NewScreenshot.CreateMenuItem ());
+		Print = new Command (
+			"print",
+			Translations.GetString ("Print"),
+			null,
+			Resources.StandardIcons.DocumentPrint);
 
-			app.AddAccelAction (Open, "<Primary>O");
-			menu.AppendItem (Open.CreateMenuItem ());
+		this.system = system;
+		this.app = app;
+	}
 
-			var save_section = new GLib.Menu ();
-			menu.AppendSection (null, save_section);
+	public void RegisterActions (Gtk.Application application, Gio.Menu menu)
+	{
+		bool isMac = system.OperatingSystem == OS.Mac;
 
-			app.AddAccelAction (Save, "<Primary>S");
-			save_section.AppendItem (Save.CreateMenuItem ());
+		Gio.Menu save_section = Gio.Menu.New ();
+		save_section.AppendItem (Save.CreateMenuItem ());
+		save_section.AppendItem (SaveAs.CreateMenuItem ());
 
-			app.AddAccelAction (SaveAs, "<Primary><Shift>S");
-			save_section.AppendItem (SaveAs.CreateMenuItem ());
+		Gio.Menu close_section = Gio.Menu.New ();
+		close_section.AppendItem (Close.CreateMenuItem ());
+		if (!isMac) close_section.AppendItem (app.Exit.CreateMenuItem ()); // This is part of the application menu on macOS
 
-			var close_section = new GLib.Menu ();
-			menu.AppendSection (null, close_section);
-
-			app.AddAccelAction (Close, "<Primary>W");
-			close_section.AppendItem (Close.CreateMenuItem ());
-
-			// This is part of the application menu on macOS.
-			if (PintaCore.System.OperatingSystem != OS.Mac) {
-				var exit = PintaCore.Actions.App.Exit;
-				app.AddAccelAction (exit, "<Primary>Q");
-				close_section.AppendItem (exit.CreateMenuItem ());
-			}
-
-			// Printing is disabled for now until it is fully functional.
+		menu.AppendItem (New.CreateMenuItem ());
+		menu.AppendItem (NewScreenshot.CreateMenuItem ());
+		menu.AppendItem (Open.CreateMenuItem ());
+		menu.AppendSection (null, save_section);
+		menu.AppendSection (null, close_section);
 #if false
-			menu.Append (Print.CreateAcceleratedMenuItem (Gdk.Key.P, Gdk.ModifierType.ControlMask));
-			menu.AppendSeparator ();
+		// Printing is disabled for now until it is fully functional.
+		menu.Append (Print.CreateAcceleratedMenuItem (Gdk.Key.P, Gdk.ModifierType.ControlMask));
+		menu.AppendSeparator ();
 #endif
-		}
+		application.AddCommands ([
+			New,
+			NewScreenshot,
+			Open,
 
-		public void RegisterHandlers ()
-		{
-		}
-		#endregion
+			Save,
+			SaveAs,
 
-		#region Event Invokers
-		internal bool RaiseSaveDocument (Document document, bool saveAs)
-		{
-			DocumentCancelEventArgs e = new DocumentCancelEventArgs (document, saveAs);
+			Close]);
+	}
 
-			if (SaveDocument == null)
-				throw new InvalidOperationException ("GUI is not handling PintaCore.Workspace.SaveDocument");
-			else
-				SaveDocument (this, e);
+	public void RegisterHandlers () { }
 
-			return !e.Cancel;
-		}
+	/// <returns>
+	/// <see langword="true"/> if the save succeeded,
+	/// <see langword="false"/> otherwise (for example, if it was canceled)
+	/// </returns>
+	internal async Task<bool> RaiseSaveDocument (Document document, bool saveAs)
+	{
+		if (SaveDocument is null)
+			throw new InvalidOperationException ("GUI is not handling Workspace.SaveDocument");
 
-		internal int RaiseModifyCompression (int defaultCompression, Gtk.Window parent)
-		{
-			ModifyCompressionEventArgs e = new ModifyCompressionEventArgs (defaultCompression, parent);
+		DocumentSaveEventArgs e = new (document, saveAs);
+		var results = await SaveDocument.InvokeSequential (this, e);
+		return results.All (succeeded => succeeded);
+	}
 
-			if (ModifyCompression != null)
-				ModifyCompression (this, e);
-
-			return e.Cancel ? -1 : e.Quality;
-		}
-		#endregion
+	internal int RaiseModifyCompression (int defaultCompression, Gtk.Window parent)
+	{
+		ModifyCompressionEventArgs e = new (defaultCompression, parent);
+		ModifyCompression?.Invoke (this, e);
+		return
+			e.Cancel
+			? -1
+			: e.Quality;
 	}
 }

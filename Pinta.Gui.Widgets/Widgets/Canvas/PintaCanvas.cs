@@ -1,21 +1,21 @@
-// 
+//
 // PintaCanvas.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,156 +25,470 @@
 // THE SOFTWARE.
 
 using System;
-using Gdk;
-using Gtk;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using Pinta.Core;
 
-namespace Pinta.Gui.Widgets
+namespace Pinta.Gui.Widgets;
+
+[GObject.Subclass<Gtk.Picture>]
+internal sealed partial class PintaCanvas
 {
-	public class PintaCanvas : DrawingArea
+	private CanvasRenderer cr = null!; // NRT - set by factory method
+	private Document document = null!;
+	private ICanvasGridService canvas_grid = null!;
+	private IToolService tools = null!;
+	private ISettingsService settings = null!;
+
+	private uint queued_update_id = 0;
+
+	private static readonly Gdk.Texture transparent_pattern_texture = CreateTransparentPatternTexture ();
+
+	private Cairo.ImageSurface? canvas_surface;
+	private Gdk.Texture? canvas_texture;
+	private RectangleI? modified_area;
+
+	private Gsk.Path? selection_path;
+	private uint selection_animation_timer_id;
+	private float selection_animation_dash_offset;
+
+	[MemberNotNull (nameof (cr))]
+	partial void Initialize ()
 	{
-		private readonly CanvasRenderer cr;
-		private readonly Document document;
+		cr = new (
+			PintaCore.LivePreview,
+			PintaCore.Workspace,
+			enableLivePreview: true,
+			enableBackgroundPattern: false);
 
-		private Cairo.ImageSurface? canvas;
+		// If there is additional space available, keep the image centered and prevent stretching.
+		Hexpand = false;
+		Halign = Gtk.Align.Center;
+		Vexpand = false;
+		Valign = Gtk.Align.Center;
+	}
 
-		public CanvasWindow CanvasWindow { get; private set; }
+	/// <summary>
+	/// NOTE: must call Configure() for dependency injection.
+	/// </summary>
+	public static new PintaCanvas New ()
+	{
+		PintaCanvas canvas = NewWithProperties ([]);
+		return canvas;
+	}
 
-		public PintaCanvas (CanvasWindow window, Document document)
-		{
-			CanvasWindow = window;
-			this.document = document;
+	internal void Configure (IToolService tools, Document document, ICanvasGridService canvasGrid, ISettingsService settings)
+	{
+		this.tools = tools;
+		canvas_grid = canvasGrid;
+		this.document = document;
+		this.settings = settings;
 
-			cr = new CanvasRenderer (true);
+		document.Workspace.ViewSizeChanged += OnViewSizeChanged;
+		document.Workspace.CanvasInvalidated += OnCanvasInvalidated;
+		document.SelectionChanged += (_, _) => QueueSelectionUpdate ();
+		settings.SettingChanged += OnSettingChanged;
 
-			// Keep the widget the same size as the canvas
-			document.Workspace.CanvasSizeChanged += delegate (object? sender, EventArgs e) {
-				SetRequisition (document.Workspace.CanvasSize);
-			};
+		UpdateSelectionAnimation ();
+	}
 
-			// Update the canvas when the image changes
-			document.Workspace.CanvasInvalidated += delegate (object? sender, CanvasInvalidatedEventArgs e) {
-				// If GTK+ hasn't created the canvas window yet, no need to invalidate it
-				if (Window == null)
-					return;
+	/// <summary>
+	/// Queue an update to the canvas texture.
+	/// There can be multiple consecutive Invalidate() calls before a UI update, e.g.
+	/// in the text tool, or undoing multiple history items.
+	/// </summary>
+	private void OnCanvasInvalidated (object? o, CanvasInvalidatedEventArgs e)
+	{
+		RectangleI rect = e.EntireSurface
+			? new RectangleI (PointI.Zero, document.ImageSize)
+			: e.Rectangle;
 
-				if (e.EntireSurface)
-					Window.Invalidate ();
-				else
-					Window.InvalidateRect (e.Rectangle, false);
-			};
-
-			// Give mouse press events to the current tool
-			ButtonPressEvent += delegate (object sender, ButtonPressEventArgs e) {
-				// The canvas gets the button press before the tab system, so
-				// if this click is on a canvas that isn't currently the ActiveDocument yet, 
-				// we need to go ahead and make it the active document for the tools
-				// to use it, even though right after this the tab system would have switched it
-				if (PintaCore.Workspace.ActiveDocument != document)
-					PintaCore.Workspace.SetActiveDocument (document);
-
-				PintaCore.Tools.DoMouseDown (document, e);
-			};
-
-			// Give mouse release events to the current tool
-			ButtonReleaseEvent += delegate (object sender, ButtonReleaseEventArgs e) {
-				PintaCore.Tools.DoMouseUp (document, e);
-			};
-
-			// Give mouse move events to the current tool
-			MotionNotifyEvent += delegate (object sender, MotionNotifyEventArgs e) {
-				var point = document.Workspace.WindowPointToCanvas (e.Event.X, e.Event.Y);
-
-				if (document.Workspace.PointInCanvas (point))
-					PintaCore.Chrome.LastCanvasCursorPoint = point.ToGdkPoint ();
-
-				if (PintaCore.Tools.CurrentTool != null)
-					PintaCore.Tools.DoMouseMove (document, e);
-			};
+		// If an update is already queued, just extend the region to update.
+		if (modified_area.HasValue) {
+			modified_area = modified_area.Value.Union (rect);
+			return;
 		}
 
-		protected override bool OnDrawn (Cairo.Context context)
-		{
-			base.OnDrawn (context);
+		modified_area = rect;
+		QueueUpdate ();
+	}
 
-			var scale = document.Workspace.Scale;
+	/// <summary>
+	/// Queue an update after a change to the document's selection.
+	/// </summary>
+	private void QueueSelectionUpdate (bool onlyDisplaySettings = false)
+	{
+		// Clear the cached selection path unless only the display
+		// settings (e.g. the dash offset) have changed.
+		if (!onlyDisplaySettings)
+			selection_path = null;
 
-			var x = (int) document.Workspace.Offset.X;
-			var y = (int) document.Workspace.Offset.Y;
+		QueueUpdate ();
+	}
 
-			// Translate our expose area for the whole drawingarea to just our canvas
-			var canvas_bounds = new Rectangle (x, y, document.Workspace.CanvasSize.Width, document.Workspace.CanvasSize.Height);
-			Rectangle expose_rect;
+	/// <summary>
+	/// Queue an update to the widget's contents on the next UI update, e.g. after changes
+	/// to the canvas contents or the selection.
+	/// This is useful to avoid redundant work if there are multiple events that trigger
+	/// changes to the document.
+	/// </summary>
+	private void QueueUpdate ()
+	{
+		if (queued_update_id > 0)
+			return;
 
-			if (Gdk.CairoHelper.GetClipRectangle (context, out expose_rect))
-				canvas_bounds.Intersect (expose_rect);
+		queued_update_id = GLib.Functions.IdleAdd (GLib.Constants.PRIORITY_DEFAULT, () => {
+			UpdateCanvas ();
+			queued_update_id = 0;
+			return false;
+		});
+	}
 
-			if (canvas_bounds.IsEmpty)
-				return true;
+	/// <summary>
+	/// Update the canvas after changes to the image.
+	/// </summary>
+	private void UpdateCanvas ()
+	{
+		Graphene.Rect canvasViewBounds = Graphene.Rect.Alloc ();
+		Size viewSize = document.Workspace.ViewSize;
+		canvasViewBounds.Init (0.0f, 0.0f, (float) viewSize.Width, (float) viewSize.Height);
 
-			canvas_bounds.X -= x;
-			canvas_bounds.Y -= y;
+		Gtk.Snapshot snapshot = Gtk.Snapshot.New ();
 
-			// Resize our offscreen surface to a surface the size of our drawing area
-			if (canvas == null || canvas.Width != canvas_bounds.Width || canvas.Height != canvas_bounds.Height) {
-				canvas?.Dispose ();
-				canvas = CairoExtensions.CreateImageSurface (Cairo.Format.Argb32, canvas_bounds.Width, canvas_bounds.Height);
+		DrawTransparentBackground (snapshot, canvasViewBounds);
+		DrawCanvasTexture (snapshot, modified_area, canvasViewBounds);
+		DrawSelection (snapshot, canvasViewBounds);
+		DrawHandles (snapshot, canvasViewBounds);
+		DrawCanvasGrid (snapshot, canvasViewBounds);
+		DrawCanvasAxonometricGrid (snapshot, canvasViewBounds);
+
+		// In the future, this would be cleaner to implement as a custom widget once gir.core supports virtual methods
+		// (in particular, zooming might be easier when we have control over the size allocation)
+		// For now, we just use a Gtk.Picture widget with a custom Gdk.Paintable for its contents.
+		Gdk.Paintable? paintable = snapshot.ToPaintable (size: null);
+		if (paintable is not null)
+			Paintable = paintable;
+		else
+			System.Console.WriteLine ("Failed to render snapshot for canvas");
+
+		modified_area = null;
+		QueueDraw ();
+	}
+
+	private static Gdk.Texture CreateTransparentPatternTexture () =>
+		CairoExtensions.CreateTransparentBackgroundSurface (size: 16).ToTexture ();
+
+	/// <summary>
+	/// Draw the transparent checkerboard background by tiling a small pattern.
+	/// </summary>
+	private void DrawTransparentBackground (Gtk.Snapshot snapshot, Graphene.Rect canvasViewBounds)
+	{
+		snapshot.AppendRepeatingTexture (transparent_pattern_texture, canvasViewBounds);
+	}
+
+	private void DrawCanvasTexture (Gtk.Snapshot snapshot, RectangleI? modifiedArea, Graphene.Rect canvasViewBounds)
+	{
+		// Update the texture if the canvas contents have changed.
+		if (modifiedArea.HasValue) {
+			// Compute the flattened image for the modified region.
+			if (canvas_surface is null ||
+			    canvas_surface.Width != document.ImageSize.Width ||
+			    canvas_surface.Height != document.ImageSize.Height) {
+
+				canvas_surface?.Dispose ();
+				canvas_surface = CairoExtensions.CreateImageSurface (Cairo.Format.Argb32, document.ImageSize.Width, document.ImageSize.Height);
+
+				canvas_texture?.Dispose ();
+				canvas_texture = null;
 			}
 
-			cr.Initialize (document.ImageSize, document.Workspace.CanvasSize);
+			// Note we are always rendering without scaling, since the scaling is applied when drawing the texture later.
+			// TODO - in the future we could experiment with creating a separate texture per layer and using gtk_snapshot_push_blend() to blend on the GPU
+			cr.Initialize (document.ImageSize, document.ImageSize);
 
-			var g = context;
+			List<Layer> layers = document.Layers.GetLayersToPaint ().ToList ();
+			cr.Render (layers, canvas_surface, offset: PointI.Zero, clipRect: modifiedArea);
 
-			// Draw our canvas drop shadow
-			g.DrawRectangle (new Cairo.Rectangle (x - 1, y - 1, document.Workspace.CanvasSize.Width + 2, document.Workspace.CanvasSize.Height + 2), new Cairo.Color (.5, .5, .5), 1);
-			g.DrawRectangle (new Cairo.Rectangle (x - 2, y - 2, document.Workspace.CanvasSize.Width + 4, document.Workspace.CanvasSize.Height + 4), new Cairo.Color (.8, .8, .8), 1);
-			g.DrawRectangle (new Cairo.Rectangle (x - 3, y - 3, document.Workspace.CanvasSize.Width + 6, document.Workspace.CanvasSize.Height + 6), new Cairo.Color (.9, .9, .9), 1);
+			Gdk.Texture? updateTexture = canvas_texture;
+			Cairo.Region? updateRegion = (updateTexture is not null)
+				? CairoExtensions.CreateRegion (modifiedArea.Value)
+				: null;
+			canvas_texture = canvas_surface.ToTexture (updateTexture, updateRegion);
+		}
 
-			// Set up our clip rectangle
-			g.Rectangle (new Cairo.Rectangle (x, y, document.Workspace.CanvasSize.Width, document.Workspace.CanvasSize.Height));
-			g.Clip ();
+		if (canvas_texture is null)
+			throw new InvalidOperationException ("Canvas was never invalidated!");
 
-			g.Translate (x, y);
+		// Scale to fit the view size (when zooming in or out).
+		Gsk.ScalingFilter scalingFilter = (document.Workspace.Scale >= 1.0) ?
+			Gsk.ScalingFilter.Nearest :
+			Gsk.ScalingFilter.Linear;
+		snapshot.AppendScaledTexture (canvas_texture, scalingFilter, canvasViewBounds);
+	}
 
-			// Render all the layers to a surface
-			var layers = document.Layers.GetLayersToPaint ();
+	private void DrawSelection (Gtk.Snapshot snapshot, Graphene.Rect canvasViewBounds)
+	{
+		if (!document.Selection.Visible)
+			return;
 
-			if (layers.Count == 0)
-				canvas.Clear ();
+		bool fillSelection = tools.CurrentTool?.IsSelectionTool ?? false;
 
-			cr.Render (layers, canvas, canvas_bounds.Location);
+		// Update the selection path.
+		if (selection_path is null) {
+			Gsk.PathBuilder pathBuilder = Gsk.PathBuilder.New ();
+			pathBuilder.AddCairoPath (document.Selection.SelectionPath);
+			selection_path = pathBuilder.ToPath ();
+		}
 
-			// Paint the surface to our canvas
-			g.SetSourceSurface (canvas, canvas_bounds.X + (int) (0 * scale), canvas_bounds.Y + (int) (0 * scale));
-			g.Paint ();
+		snapshot.Save ();
+		snapshot.PushClip (canvasViewBounds);
 
-			// Selection outline
-			if (document.Selection.Visible) {
-				var tool_name = PintaCore.Tools.CurrentTool?.GetType ().Name ?? string.Empty;
-				var fillSelection = tool_name.Contains ("Select") && !tool_name.Contains ("Selected");
-				document.Selection.Draw (g, scale, fillSelection);
-			}
+		// Scale the selection path up to the view size.
+		// Note the outline width (below) remains at a constant size.
+		float scale = (float) document.Workspace.Scale;
+		snapshot.Scale (scale, scale);
 
+		if (fillSelection) {
+			Gdk.RGBA fillColor = new () { Red = 0.7f, Green = 0.8f, Blue = 0.9f, Alpha = 0.2f };
+			snapshot.AppendFill (selection_path, Gsk.FillRule.EvenOdd, fillColor);
+		}
+
+		// Draw a white line first so it shows up on dark backgrounds
+		Gsk.Stroke stroke = Gsk.Stroke.New (lineWidth: 1.0f / scale);
+		Gdk.RGBA white = new () { Red = 1, Green = 1, Blue = 1, Alpha = 1 };
+		snapshot.AppendStroke (selection_path, stroke, white);
+
+		// Draw a black dashed line over the white line
+		float dashOffset = selection_animation_dash_offset / scale;
+		stroke.SetDash ([2.0f / scale, 4.0f / scale]);
+		stroke.SetDashOffset (dashOffset);
+		Gdk.RGBA black = new () { Red = 0, Green = 0, Blue = 0, Alpha = 1 };
+		snapshot.AppendStroke (selection_path, stroke, black);
+
+		snapshot.Pop ();
+		snapshot.Restore ();
+	}
+
+	private void DrawHandles (Gtk.Snapshot snapshot, Graphene.Rect canvasViewBounds)
+	{
+		BaseTool? tool = tools.CurrentTool;
+		if (tool is null)
+			return;
+
+		snapshot.PushClip (canvasViewBounds);
+
+		foreach (IToolHandle control in tool.Handles.Where (c => c.Active)) {
+			control.Draw (snapshot);
+		}
+
+		snapshot.Pop ();
+	}
+
+	private void DrawCanvasGrid (Gtk.Snapshot snapshot, Graphene.Rect canvasViewBounds)
+	{
+		if (!ShouldShowCanvasGrid ())
+			return;
+
+		Gsk.Path gridPath = BuildCanvasGridPath ();
+
+		snapshot.PushClip (canvasViewBounds);
+		snapshot.Save ();
+
+		// Scale the selection path up to the view size.
+		float scale = (float) document.Workspace.Scale;
+		snapshot.Scale (scale, scale);
+
+		// Draw as a dotted line (every other pixel) to have a more subtle appearance.
+		Gsk.Stroke stroke = Gsk.Stroke.New (lineWidth: 1.0f / scale);
+		stroke.SetDash ([1.0f / scale, 1.0f / scale]);
+
+		Gdk.RGBA color = new () { Red = 0, Green = 0, Blue = 0, Alpha = 1 };
+		snapshot.AppendStroke (gridPath, stroke, color);
+
+		snapshot.Restore ();
+		snapshot.Pop ();
+	}
+
+	private Gsk.Path BuildCanvasGridPath ()
+	{
+		int cellHeight = canvas_grid.CellHeight;
+		int cellWidth = canvas_grid.CellWidth;
+		int imageHeight = document.ImageSize.Height;
+		int imageWidth = document.ImageSize.Width;
+
+		Gsk.PathBuilder pathBuilder = Gsk.PathBuilder.New ();
+		// Add horizontal lines.
+		for (int y = 0; y < imageHeight; y += cellHeight) {
+			pathBuilder.MoveTo (0, y);
+			pathBuilder.LineTo (imageWidth, y);
+		}
+
+		// Add vertical lines.
+		for (int x = 0; x < imageWidth; x += cellWidth) {
+			pathBuilder.MoveTo (x, 0);
+			pathBuilder.LineTo (x, imageHeight);
+		}
+
+		return pathBuilder.ToPath ();
+	}
+
+	/// <summary>
+	/// The grid should be drawn if it is enabled and we're zoomed in far enough.
+	/// </summary>
+	private bool ShouldShowCanvasGrid ()
+	{
+		if (!canvas_grid.ShowGrid)
+			return false;
+
+		const int MIN_GRID_LINE_DISTANCE = 5;
+
+		int cellHeight = canvas_grid.CellHeight;
+		int cellWidth = canvas_grid.CellWidth;
+
+		int minCanvasDistance = Math.Min (cellHeight, cellWidth);
+		int minViewDistance = (int) Math.Ceiling (minCanvasDistance * document.Workspace.Scale);
+
+		return minViewDistance >= MIN_GRID_LINE_DISTANCE;
+	}
+
+	private void DrawCanvasAxonometricGrid (Gtk.Snapshot snapshot, Graphene.Rect canvasViewBounds)
+	{
+		if (!ShouldShowCanvasAxonometricGrid ())
+			return;
+
+		Gsk.Path gridPath = BuildCanvasAxonometricGridPath ();
+
+		snapshot.PushClip (canvasViewBounds);
+		snapshot.Save ();
+
+		// Scale the selection path up to the view size.
+		float scale = (float) document.Workspace.Scale;
+		snapshot.Scale (scale, scale);
+
+		// Draw as a dotted line (every other pixel) to have a more subtle appearance.
+		Gsk.Stroke stroke = Gsk.Stroke.New (lineWidth: 1.0f / scale);
+		stroke.SetDash ([1.0f / scale, 1.0f / scale]);
+
+		Gdk.RGBA color = new () { Red = 0, Green = 0, Blue = 0, Alpha = 1 };
+		snapshot.AppendStroke (gridPath, stroke, color);
+
+		snapshot.Restore ();
+		snapshot.Pop ();
+	}
+
+	private Gsk.Path BuildCanvasAxonometricGridPath ()
+	{
+		int axonometricWidth = canvas_grid.AxonometricWidth;
+		double angleRadians = canvas_grid.AxonometricAngle.ToRadians ().Radians;
+		double tanAngle = Math.Tan (angleRadians);
+		int imageHeight = document.ImageSize.Height;
+		int imageWidth = document.ImageSize.Width;
+
+		Gsk.PathBuilder pathBuilder = Gsk.PathBuilder.New ();
+
+		// Ascending diagonal lines
+		double verticalSpacing = 2 * axonometricWidth * tanAngle;
+		double maxStartY = imageWidth * tanAngle + imageHeight;
+		for (double s = 0; s < maxStartY; s += verticalSpacing) {
+			float xEnd = (float) (s / tanAngle);
+			pathBuilder.MoveTo (0, (float) s);
+			pathBuilder.LineTo (xEnd, 0);
+		}
+
+		// Descending diagonal lines
+		int horizontalSpacing = 2 * axonometricWidth;
+		double horizontalExtent = imageHeight / tanAngle;
+		double startX = -Math.Ceiling (horizontalExtent / horizontalSpacing) * horizontalSpacing;
+		for (double x = startX; x < imageWidth; x += horizontalSpacing) {
+			pathBuilder.MoveTo ((float) x, 0);
+			pathBuilder.LineTo ((float) (x + imageHeight / tanAngle), imageHeight);
+		}
+
+		// Vertical lines.
+		for (int i = 0; i < imageWidth; i += axonometricWidth) {
+			pathBuilder.MoveTo (i, 0);
+			pathBuilder.LineTo (i, imageHeight);
+		}
+
+		return pathBuilder.ToPath ();
+	}
+
+	/// <summary>
+	/// The axonometric grid should be drawn if it is enabled and we're zoomed in far enough.
+	/// </summary>
+	private bool ShouldShowCanvasAxonometricGrid ()
+	{
+		if (!canvas_grid.ShowAxonometricGrid)
+			return false;
+
+		if (canvas_grid.AxonometricAngle.Degrees <= 0)
+			return false;
+
+		if (canvas_grid.AxonometricAngle.Degrees >= 90)
+			return false;
+
+		const int MIN_GRID_LINE_DISTANCE = 5;
+
+		int minCanvasDistance = canvas_grid.AxonometricWidth;
+		int minViewDistance = (int) Math.Ceiling (minCanvasDistance * document.Workspace.Scale);
+
+		return minViewDistance >= MIN_GRID_LINE_DISTANCE;
+	}
+
+	/// <summary>
+	/// Update the widget's size when the image size has changed, or e.g. zooming in.
+	/// </summary>
+	private void OnViewSizeChanged (object? o, System.EventArgs args)
+	{
+		Size viewSize = document.Workspace.ViewSize;
+		SetSizeRequest (viewSize.Width, viewSize.Height);
+	}
+
+	#region Selection outline animation
+	private bool SelectionAnimationTick ()
+	{
+		// Note: using ActiveDocumentOrDefault in case the callback is invoked after closing the document.
+		if (PintaCore.Workspace.ActiveDocumentOrDefault != document || !document.Selection.Visible)
 			return true;
-		}
 
-		private void SetRequisition (Size size)
-		{
-			WidthRequest = size.Width;
-			HeightRequest = size.Height;
+		selection_animation_dash_offset -= 1f;
+		if (selection_animation_dash_offset < 0f)
+			selection_animation_dash_offset += 6f;
 
-			QueueResize ();
-		}
+		QueueSelectionUpdate (onlyDisplaySettings: true);
+		return true;
+	}
 
-		public void DoKeyPressEvent (object o, KeyPressEventArgs e)
-		{
-			// Give the current tool a chance to handle the key press
-			PintaCore.Tools.DoKeyDown (document, e);
-		}
+	private void OnSettingChanged (object? sender, SettingChangedEventArgs e)
+	{
+		if (e.Key != SettingNames.CANVAS_SELECTION_ANIMATED)
+			return;
 
-		public void DoKeyReleaseEvent (object o, KeyReleaseEventArgs e)
-		{
-			PintaCore.Tools.DoKeyUp (document, e);
+		UpdateSelectionAnimation ();
+	}
+
+	/// <summary>
+	/// Enable or disable the selection outline animation callback based on the user's preference.
+	/// </summary>
+	private void UpdateSelectionAnimation ()
+	{
+		bool enable = settings.GetSetting (SettingNames.CANVAS_SELECTION_ANIMATED, SettingDefaults.CANVAS_SELECTION_ANIMATED);
+
+		if (enable && selection_animation_timer_id == 0) {
+			selection_animation_timer_id = GLib.Functions.TimeoutAdd (GLib.Constants.PRIORITY_DEFAULT, 80, SelectionAnimationTick);
+		} else if (!enable && selection_animation_timer_id > 0) {
+			GLib.Source.Remove (selection_animation_timer_id);
+			selection_animation_timer_id = 0;
 		}
+	}
+	#endregion
+
+	public override void Dispose ()
+	{
+		// Remove the animation event handler to avoid leaks
+		GLib.Source.Remove (selection_animation_timer_id);
+
+		base.Dispose ();
 	}
 }

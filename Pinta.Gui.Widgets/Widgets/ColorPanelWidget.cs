@@ -1,22 +1,22 @@
-// 
+//
 // ColorPanelWidget.cs
-//  
+//
 // Author:
 //      Krzysztof Marecki <marecki.krzysztof@gmail.com>
-// 
+//
 // Copyright (c) 2010 Krzysztof Marecki
 //
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,35 +25,53 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
 using Cairo;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Gui.Widgets
+namespace Pinta.Gui.Widgets;
+
+[GObject.Subclass<Gtk.DrawingArea>]
+public sealed partial class ColorPanelWidget
 {
-	public class ColorPanelWidget : FilledAreaBin
+	private Color color;
+	public Color CairoColor {
+		get => color;
+		set {
+			color = value;
+			QueueDraw ();
+		}
+	}
+
+	public static new ColorPanelWidget New ()
+		=> NewWithProperties ([]);
+
+	partial void Initialize ()
 	{
-		private readonly EventBox eventbox;
+		ClickGesture.SetButton (0); // Handle all buttons
 
-		public Color CairoColor { get; set; }
+		// --- Initialization (Gtk.Widget)
 
-		public ColorPanelWidget ()
-		{
-			HeightRequest = 24;
+		HeightRequest = 24;
+		AddController (ClickGesture);
 
-			eventbox = new EventBox {
-				Events = (Gdk.EventMask) 256,
-				VisibleWindow = false
-			};
+		// --- Initialization (Gtk.DrawingArea)
 
-			Add (eventbox);
-		}
+		SetDrawFunc ((_, context, _, _) => Draw (context));
+	}
 
-		protected override bool OnDrawn (Context cr)
-		{
-			cr.FillRoundedRectangle (new Rectangle (0, 0, AllocatedWidth, AllocatedHeight), 4, CairoColor);
-			return true;
-		}
+	public Gtk.GestureClick ClickGesture { get; } = Gtk.GestureClick.New ();
+
+	private void Draw (Context cr)
+	{
+		cr.FillRoundedRectangle (
+			new RectangleD (
+				0,
+				0,
+				GetAllocatedWidth (),
+				GetAllocatedHeight ()),
+			4,
+			CairoColor);
+
+		cr.Dispose ();
 	}
 }

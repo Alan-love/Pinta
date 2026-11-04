@@ -1,21 +1,21 @@
-// 
+//
 // PaletteManager.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -26,195 +26,205 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using Cairo;
-using Gtk;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public interface IPaletteService
 {
-	public interface IPaletteService
-	{
-		Color PrimaryColor { get; set; }
-		Color SecondaryColor { get; set; }
-		void SetColor (bool setPrimary, Color color, bool addToRecent = true);
+	Color PrimaryColor { get; set; }
+	Color SecondaryColor { get; set; }
+	Palette CurrentPalette { get; }
+	int MaxRecentlyUsedColor { get; }
+	ReadOnlyCollection<Color> RecentlyUsedColors { get; }
+	void SetColor (bool setPrimary, Color color, bool addToRecent = true);
+	event EventHandler? PrimaryColorChanged;
+	event EventHandler? SecondaryColorChanged;
+	event EventHandler? RecentColorsChanged;
+}
+
+public sealed class PaletteManager : IPaletteService
+{
+	private Color primary;
+	private Color secondary;
+
+	private const int MAX_RECENT_COLORS = 10;
+	private const string PALETTE_FILE = "palette.txt";
+
+	private readonly List<Color> recently_used;
+
+	public Color PrimaryColor {
+		get => primary;
+		set => SetColor (true, value, true);
 	}
 
-	public class PaletteManager : IPaletteService
+	public int MaxRecentlyUsedColor => MAX_RECENT_COLORS;
+
+	public ReadOnlyCollection<Color> RecentlyUsedColors { get; }
+
+	public Color SecondaryColor {
+		get => secondary;
+		set => SetColor (false, value, true);
+	}
+
+	public Palette CurrentPalette { get; }
+
+	private readonly ISettingsService settings;
+	private readonly PaletteFormatManager palette_formats;
+	public PaletteManager (
+		ISettingsService settings,
+		PaletteFormatManager paletteFormats)
 	{
-		private Color primary;
-		private Color secondary;
-		private Palette? palette;
+		List<Color> recentlyUsed = new (MAX_RECENT_COLORS);
 
-		private const int MAX_RECENT_COLORS = 10;
-		private const string PALETTE_FILE = "palette.txt";
-		private const string PRIMARY_COLOR_SETTINGS_KEY = "primary-color";
-		private const string SECONDARY_COLOR_SETTINGS_KEY = "secondary-color";
-		private const string RECENT_COLORS_SETTINGS_KEY = "recently-used-colors";
+		recently_used = recentlyUsed;
+		RecentlyUsedColors = new ReadOnlyCollection<Color> (recentlyUsed);
 
-		private readonly List<Color> recently_used = new List<Color> (MAX_RECENT_COLORS);
+		this.settings = settings;
+		this.palette_formats = paletteFormats;
 
-		public Color PrimaryColor {
-			get => primary;
-			set => SetColor (true, value, true);
+		CurrentPalette = PaletteHelper.CreateDefault ();
+
+		// This depends on `palette_formats` and `CurrentPalette` having a value
+		// Can this call be moved out of this constructor?
+		PopulateSavedPalette (paletteFormats);
+
+		PopulateRecentlyUsedColors ();
+
+		settings.SaveSettingsBeforeQuit += (_, _) => {
+			SaveCurrentPalette ();
+			SaveRecentlyUsedColors ();
+		};
+	}
+
+	public void SwapColors ()
+	{
+		(SecondaryColor, PrimaryColor) = (PrimaryColor, SecondaryColor);
+	}
+
+	// This allows callers to bypass affecting the recently used list
+	public void SetColor (bool setPrimary, Color color, bool addToRecent = true)
+	{
+		if (setPrimary && !primary.Equals (color)) {
+			primary = color;
+
+			OnPrimaryColorChanged ();
+		} else if (!setPrimary && !secondary.Equals (color)) {
+			secondary = color;
+
+			OnSecondaryColorChanged ();
 		}
 
-		public int MaxRecentlyUsedColor => MAX_RECENT_COLORS;
+		if (addToRecent)
+			AddRecentlyUsedColor (color);
+	}
 
-		// Return an IEnumerable to prevent modification of the list
-		public IEnumerable<Color> RecentlyUsedColors => recently_used;
-
-		public Color SecondaryColor {
-			get => secondary;
-			set => SetColor (false, value, true);
-		}
-
-		public Palette CurrentPalette {
-			get {
-				if (palette == null) {
-					palette = Palette.GetDefault ();
-				}
-
-				return palette;
-			}
-		}
-
-		public PaletteManager ()
-		{
-			PopulateSavedPalette ();
-			PopulateRecentlyUsedColors ();
-
-			PintaCore.Settings.SaveSettingsBeforeQuit += (o, e) => {
-				SaveCurrentPalette ();
-				SaveRecentlyUsedColors ();
-			};
-		}
-
-		public void DoKeyPress (object o, KeyPressEventArgs e)
-		{
-			if (e.Event.State.FilterModifierKeys () == Gdk.ModifierType.None && e.Event.Key.ToUpper () == Gdk.Key.X) {
-				Color temp = PintaCore.Palette.PrimaryColor;
-				PintaCore.Palette.PrimaryColor = PintaCore.Palette.SecondaryColor;
-				PintaCore.Palette.SecondaryColor = temp;
-
-				e.RetVal = true;
-			}
-		}
-
-		// This allows callers to bypass affecting the recently used list
-		public void SetColor (bool setPrimary, Color color, bool addToRecent = true)
-		{
-			if (setPrimary && !primary.Equals (color)) {
-				primary = color;
-
-				OnPrimaryColorChanged ();
-			} else if (!setPrimary && !secondary.Equals (color)) {
-				secondary = color;
-
-				OnSecondaryColorChanged ();
-			}
-
-			if (addToRecent)
-				AddRecentlyUsedColor (color);
-		}
-
-		// The most recently used color is at index 0.
-		private void AddRecentlyUsedColor (Color color)
-		{
-			// The color is already in the recently used list
-			if (recently_used.Contains (color)) {
-				// If it's already at the back, nothing to do
-				if (recently_used[0].Equals (color))
-					return;
-
-				// Move it to the front
-				recently_used.Remove (color);
-				recently_used.Insert (0, color);
-
-				OnRecentColorsChanged ();
+	// The most recently used color is at index 0.
+	private void AddRecentlyUsedColor (Color color)
+	{
+		// The color is already in the recently used list
+		if (recently_used.Contains (color)) {
+			// If it's already at the back, nothing to do
+			if (recently_used[0].Equals (color))
 				return;
-			}
 
-			// Color needs to be added to the list
-			if (recently_used.Count == MAX_RECENT_COLORS)
-				recently_used.RemoveAt (MAX_RECENT_COLORS - 1);
-
+			// Move it to the front
+			recently_used.Remove (color);
 			recently_used.Insert (0, color);
 
 			OnRecentColorsChanged ();
+			return;
 		}
 
-		private void PopulateSavedPalette ()
-		{
-			var palette_file = System.IO.Path.Combine (PintaCore.Settings.GetUserSettingsDirectory (), PALETTE_FILE);
+		// Color needs to be added to the list
+		if (recently_used.Count == MAX_RECENT_COLORS)
+			recently_used.RemoveAt (MAX_RECENT_COLORS - 1);
 
-			if (System.IO.File.Exists (palette_file))
-				CurrentPalette.Load (palette_file);
-		}
+		recently_used.Insert (0, color);
 
-		private void PopulateRecentlyUsedColors ()
-		{
-			// Primary / Secondary colors
-			var primary_color = PintaCore.Settings.GetSetting (PRIMARY_COLOR_SETTINGS_KEY, ColorBgra.Black.ToHexString ());
-			var secondary_color = PintaCore.Settings.GetSetting (SECONDARY_COLOR_SETTINGS_KEY, ColorBgra.White.ToHexString ());
-
-			SetColor (true, ColorBgra.TryParseHexString (primary_color, out var primary) ? primary.ToCairoColor () : new Color (0, 0, 0), false);
-			SetColor (false, ColorBgra.TryParseHexString (secondary_color, out var secondary) ? secondary.ToCairoColor () : new Color (1, 0, 0), false);
-
-			// Recently used palette
-			var saved_colors = PintaCore.Settings.GetSetting (RECENT_COLORS_SETTINGS_KEY, string.Empty);
-
-			foreach (var hex_color in saved_colors.Split (',')) {
-				if (ColorBgra.TryParseHexString (hex_color, out var color))
-					recently_used.Add (color.ToCairoColor ());
-			}
-
-			// Fill in with default color if not enough saved
-			var more_colors = MAX_RECENT_COLORS - recently_used.Count;
-
-			if (more_colors > 0)
-				recently_used.AddRange (Enumerable.Repeat (new Color (.9, .9, .9), more_colors));
-		}
-
-		private void SaveCurrentPalette ()
-		{
-			var palette_file = System.IO.Path.Combine (PintaCore.Settings.GetUserSettingsDirectory (), PALETTE_FILE);
-			var palette_saver = PintaCore.System.PaletteFormats.Formats.FirstOrDefault (p => p.Extensions.Contains ("txt"))?.Saver;
-
-			if (palette_saver is not null)
-				CurrentPalette.Save (palette_file, palette_saver);
-		}
-
-		private void SaveRecentlyUsedColors ()
-		{
-			// Primary / Secondary colors
-			PintaCore.Settings.PutSetting (PRIMARY_COLOR_SETTINGS_KEY, PrimaryColor.ToColorBgra ().ToHexString ());
-			PintaCore.Settings.PutSetting (SECONDARY_COLOR_SETTINGS_KEY, SecondaryColor.ToColorBgra ().ToHexString ());
-
-			// Recently used palette
-			var colors = string.Join (",", recently_used.Select (c => c.ToColorBgra ().ToHexString ()));
-			PintaCore.Settings.PutSetting (RECENT_COLORS_SETTINGS_KEY, colors);
-		}
-
-		#region Protected Methods
-		protected void OnPrimaryColorChanged ()
-		{
-			if (PrimaryColorChanged != null)
-				PrimaryColorChanged.Invoke (this, EventArgs.Empty);
-		}
-
-		protected void OnRecentColorsChanged () => RecentColorsChanged?.Invoke (this, EventArgs.Empty);
-
-		protected void OnSecondaryColorChanged ()
-		{
-			if (SecondaryColorChanged != null)
-				SecondaryColorChanged.Invoke (this, EventArgs.Empty);
-		}
-		#endregion
-
-		#region Events
-		public event EventHandler? PrimaryColorChanged;
-		public event EventHandler? SecondaryColorChanged;
-		public event EventHandler? RecentColorsChanged;
-		#endregion
+		OnRecentColorsChanged ();
 	}
+
+	private void PopulateSavedPalette (PaletteFormatManager paletteFormats)
+	{
+		string paletteFile = System.IO.Path.Combine (settings.GetUserSettingsDirectory (), PALETTE_FILE);
+		if (!System.IO.File.Exists (paletteFile)) return;
+		CurrentPalette.Load (paletteFormats, Gio.FileHelper.NewForPath (paletteFile));
+	}
+
+	private void PopulateRecentlyUsedColors ()
+	{
+		// Primary / Secondary colors
+		string primaryColor = settings.GetSetting (SettingNames.PRIMARY_COLOR, string.Empty);
+		string secondaryColor = settings.GetSetting (SettingNames.SECONDARY_COLOR, string.Empty);
+
+#pragma warning disable CS0618 // Type or member is obsolete
+
+		SetColor (
+			setPrimary: true,
+			Color.ParseBgraHexString (primaryColor) ?? Color.Black,
+			addToRecent: false);
+
+		SetColor (
+			setPrimary: false,
+			Color.ParseBgraHexString (secondaryColor) ?? Color.White,
+			addToRecent: false);
+
+		// Recently used palette
+		string savedColors = settings.GetSetting (SettingNames.RECENT_COLORS, string.Empty);
+
+		foreach (string hexColor in savedColors.Split (',')) {
+			Color? color = Color.ParseBgraHexString (hexColor);
+			if (color is not null)
+				recently_used.Add (color.Value);
+		}
+
+#pragma warning restore CS0618
+
+		// Fill in with default color if not enough saved
+		int more_colors = MAX_RECENT_COLORS - recently_used.Count;
+
+		if (more_colors > 0)
+			recently_used.AddRange (Enumerable.Repeat (new Color (.9, .9, .9), more_colors));
+	}
+
+	private void SaveCurrentPalette ()
+	{
+		string palette_file = System.IO.Path.Combine (settings.GetUserSettingsDirectory (), PALETTE_FILE);
+		var palette_saver = palette_formats.Formats.FirstOrDefault (p => p.Extensions.Contains ("txt"))?.Saver;
+		if (palette_saver is not null)
+			CurrentPalette.Save (Gio.FileHelper.NewForPath (palette_file), palette_saver);
+	}
+
+	private void SaveRecentlyUsedColors ()
+	{
+#pragma warning disable CS0618 // Type or member is obsolete
+
+		// Primary / Secondary colors
+		settings.PutSetting (SettingNames.PRIMARY_COLOR, Color.ToBgraHexString (PrimaryColor));
+		settings.PutSetting (SettingNames.SECONDARY_COLOR, Color.ToBgraHexString (SecondaryColor));
+
+		// Recently used palette
+		string colors = string.Join (",", recently_used.Select (Color.ToBgraHexString));
+		settings.PutSetting (SettingNames.RECENT_COLORS, colors);
+#pragma warning restore CS0618
+	}
+
+	private void OnPrimaryColorChanged ()
+	{
+		PrimaryColorChanged?.Invoke (this, EventArgs.Empty);
+	}
+
+	private void OnRecentColorsChanged () => RecentColorsChanged?.Invoke (this, EventArgs.Empty);
+
+	private void OnSecondaryColorChanged ()
+	{
+		SecondaryColorChanged?.Invoke (this, EventArgs.Empty);
+	}
+
+	public event EventHandler? PrimaryColorChanged;
+	public event EventHandler? SecondaryColorChanged;
+	public event EventHandler? RecentColorsChanged;
 }

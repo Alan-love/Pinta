@@ -11,27 +11,26 @@ using System;
 using Cairo;
 using Pinta.Core;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class InvertColorsEffect : BaseEffect
 {
-	public class InvertColorsEffect : BaseEffect
-	{
-		UnaryPixelOp op = new UnaryPixelOps.Invert ();
+	static readonly UnaryPixelOp invert = new UnaryPixelOps.Invert ();
 
-		public override string Icon {
-			get { return "Menu.Adjustments.InvertColors.png"; }
-		}
+	public InvertColorsEffect (IServiceProvider _) { }
 
-		public override string Name {
-			get { return Translations.GetString ("Invert Colors"); }
-		}
+	public sealed override bool IsTileable
+		=> true;
 
-		public override string AdjustmentMenuKey {
-			get { return "I"; }
-		}
+	public override string Icon
+		=> Resources.Icons.AdjustmentsInvertColors;
 
-		public override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			op.Apply (dest, src, rois);
-		}
-	}
+	public override string Name
+		=> Translations.GetString ("Invert Colors");
+
+	public override string AdjustmentMenuKey
+		=> "I";
+
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
+		=> invert.Apply (destination, source, roi);
 }

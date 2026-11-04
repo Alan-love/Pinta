@@ -8,75 +8,66 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class HueSaturationEffect : BaseEffect
 {
-	public class HueSaturationEffect : BaseEffect
+	public sealed override bool IsTileable => true;
+
+	public override string Icon => Pinta.Resources.Icons.AdjustmentsHueSaturation;
+
+	public override string Name => Translations.GetString ("Hue / Saturation");
+
+	public override bool IsConfigurable => true;
+
+	public override string AdjustmentMenuKey => "U";
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public HueSaturationEffect (IServiceProvider services)
 	{
-		UnaryPixelOp? op;
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new HueSaturationData ();
+	}
 
-		public override string Icon {
-			get { return "Menu.Adjustments.HueAndSaturation.png"; }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override string Name {
-			get { return Translations.GetString ("Hue / Saturation"); }
-		}
+	private UnaryPixelOp CreateOptimalOp ()
+		=>
+			Data.IsDefault
+			? new UnaryPixelOps.Identity ()
+			: new UnaryPixelOps.HueSaturationLightness (
+				hueDelta: Data.Hue,
+				satDelta: Data.Saturation,
+				lightness: Data.Lightness);
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	public override void Render (ImageSurface src, ImageSurface dest, ReadOnlySpan<RectangleI> rois)
+	{
+		UnaryPixelOp op = CreateOptimalOp ();
+		op.Apply (dest, src, rois);
+	}
 
-		public override string AdjustmentMenuKey {
-			get { return "U"; }
-		}
+	public HueSaturationData Data
+		=> (HueSaturationData) EffectData!;  // NRT - Set in constructor
 
-		public HueSaturationEffect ()
-		{
-			EffectData = new HueSaturationData ();
-		}
+	public sealed class HueSaturationData : EffectData
+	{
+		[Caption ("Hue"), MinimumValue (-180), MaximumValue (180)]
+		public int Hue { get; set; } = 0;
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
+		[Caption ("Saturation"), MinimumValue (0), MaximumValue (200)]
+		public int Saturation { get; set; } = 100;
 
-		public override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			int hue_delta = Data.Hue;
-			int sat_delta = Data.Saturation;
-			int lightness = Data.Lightness;
+		[Caption ("Lightness")]
+		public int Lightness { get; set; } = 0;
 
-			if (op == null) {
-				if (hue_delta == 0 && sat_delta == 100 && lightness == 0)
-					op = new UnaryPixelOps.Identity ();
-				else
-					op = new UnaryPixelOps.HueSaturationLightness (hue_delta, sat_delta, lightness);
-			}
-
-			op.Apply (dest, src, rois);
-		}
-
-		private HueSaturationData Data { get { return (HueSaturationData) EffectData!; } } // NRT - Set in constructor
-
-		private class HueSaturationData : EffectData
-		{
-			[Caption ("Hue"), MinimumValue (-180), MaximumValue (180)]
-			public int Hue = 0;
-
-			[Caption ("Saturation"), MinimumValue (0), MaximumValue (200)]
-			public int Saturation = 100;
-
-			[Caption ("Lightness")]
-			public int Lightness = 0;
-
-			[Skip]
-			public override bool IsDefault {
-				get { return Hue == 0 && Saturation == 100 && Lightness == 0; }
-			}
-		}
+		[Skip]
+		public override bool IsDefault => Hue == 0 && Saturation == 100 && Lightness == 0;
 	}
 }

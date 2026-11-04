@@ -1,21 +1,21 @@
-// 
+//
 // CloseDocumentAction.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,76 +25,85 @@
 // THE SOFTWARE.
 
 using System;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class CloseDocumentAction : IActionHandler
 {
-	class CloseDocumentAction : IActionHandler
+	private readonly ActionManager actions;
+	private readonly ChromeManager chrome;
+	private readonly WorkspaceManager workspace;
+	private readonly ToolManager tools;
+	internal CloseDocumentAction (
+		ActionManager actions,
+		ChromeManager chrome,
+		WorkspaceManager workspace,
+		ToolManager tools)
 	{
-		private const string markup = "<span weight=\"bold\" size=\"larger\">{0}</span>\n\n{1}";
+		this.actions = actions;
+		this.chrome = chrome;
+		this.workspace = workspace;
+		this.tools = tools;
+	}
 
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.File.Close.Activated += Activated;
+	void IActionHandler.Initialize ()
+	{
+		actions.File.Close.Activated += Activated;
+	}
+
+	void IActionHandler.Uninitialize ()
+	{
+		actions.File.Close.Activated -= Activated;
+	}
+
+	private async void Activated (object sender, EventArgs e)
+	{
+		// Commit any pending changes
+		tools.Commit ();
+
+		// If it's not dirty, just close it
+		if (!workspace.ActiveDocument.IsDirty) {
+			workspace.CloseActiveDocument ();
+			return;
 		}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.File.Close.Activated -= Activated;
+		string heading = Translations.GetString (
+			"Save changes to image \"{0}\" before closing?",
+			workspace.ActiveDocument.DisplayName);
+
+		string body = Translations.GetString ("If you don't save, all changes will be permanently lost.");
+
+		Adw.MessageDialog dialog = Adw.MessageDialog.New (chrome.MainWindow, heading, body);
+
+		const string cancel_response = "cancel";
+		const string discard_response = "discard";
+		const string save_response = "save";
+
+		dialog.AddResponse (cancel_response, Translations.GetString ("_Cancel"));
+		dialog.AddResponse (discard_response, Translations.GetString ("_Discard"));
+		dialog.AddResponse (save_response, Translations.GetString ("_Save"));
+
+		// Configure the styling for the save / discard buttons.
+		dialog.SetResponseAppearance (discard_response, Adw.ResponseAppearance.Destructive);
+		dialog.SetResponseAppearance (save_response, Adw.ResponseAppearance.Suggested);
+
+		dialog.CloseResponse = cancel_response;
+		dialog.DefaultResponse = save_response;
+
+		string response = dialog.RunBlocking ();
+		if (response == save_response) {
+
+			bool saved = await workspace.ActiveDocument.Save (false);
+
+			// If saved is false, then the user
+			// must have cancelled the Save dialog
+			if (saved)
+				workspace.CloseActiveDocument ();
+
+		} else if (response == discard_response) {
+			workspace.CloseActiveDocument ();
 		}
-		#endregion
 
-		private void Activated (object sender, EventArgs e)
-		{
-			// Commit any pending changes
-			PintaCore.Tools.Commit ();
-
-			// If it's not dirty, just close it
-			if (!PintaCore.Workspace.ActiveDocument.IsDirty) {
-				PintaCore.Workspace.CloseActiveDocument ();
-				return;
-			}
-
-			var primary = Translations.GetString ("Save changes to image \"{0}\" before closing?");
-			var secondary = Translations.GetString ("If you don't save, all changes will be permanently lost.");
-			var message = string.Format (markup, primary, secondary);
-
-			using var md = new MessageDialog (PintaCore.Chrome.MainWindow, DialogFlags.Modal,
-						    MessageType.Question, ButtonsType.None, true,
-						    message, System.IO.Path.GetFileName (PintaCore.Workspace.ActiveDocument.Filename));
-
-			// Use the standard button order for each OS.
-			Widget closeButton;
-			if (PintaCore.System.OperatingSystem == OS.Windows) {
-				md.AddButton (Stock.Save, ResponseType.Yes);
-				closeButton = md.AddButton (Translations.GetString ("Close _without Saving"), ResponseType.No);
-				md.AddButton (Stock.Cancel, ResponseType.Cancel);
-			} else {
-				closeButton = md.AddButton (Translations.GetString ("Close _without Saving"), ResponseType.No);
-				md.AddButton (Stock.Cancel, ResponseType.Cancel);
-				md.AddButton (Stock.Save, ResponseType.Yes);
-			}
-
-			// Style the close button as being a destructive action.
-			// (https://developer.gnome.org/hig/stable/buttons.html.en)
-			closeButton.StyleContext.AddClass ("destructive-action");
-
-			md.DefaultResponse = ResponseType.Yes;
-
-			ResponseType response = (ResponseType) md.Run ();
-
-			if (response == ResponseType.Yes) {
-				PintaCore.Workspace.ActiveDocument.Save (false);
-
-				// If the image is still dirty, the user
-				// must have cancelled the Save dialog
-				if (!PintaCore.Workspace.ActiveDocument.IsDirty)
-					PintaCore.Workspace.CloseActiveDocument ();
-			} else if (response == ResponseType.No) {
-				PintaCore.Workspace.CloseActiveDocument ();
-			}
-		}
 	}
 }

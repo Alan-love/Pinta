@@ -25,42 +25,51 @@
 // THE SOFTWARE.
 
 using System;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class ExitProgramAction : IActionHandler
 {
-	class ExitProgramAction : IActionHandler
+	private readonly ActionManager actions;
+	private readonly ChromeManager chrome;
+	private readonly WorkspaceManager workspace;
+	internal ExitProgramAction (
+		ActionManager actions,
+		ChromeManager chrome,
+		WorkspaceManager workspace)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.App.Exit.Activated += Activated;
+		this.actions = actions;
+		this.chrome = chrome;
+		this.workspace = workspace;
+	}
+
+	void IActionHandler.Initialize ()
+	{
+		actions.App.Exit.Activated += Activated;
+	}
+
+	void IActionHandler.Uninitialize ()
+	{
+		actions.App.Exit.Activated -= Activated;
+	}
+
+	private void Activated (object sender, EventArgs e)
+	{
+		while (workspace.HasOpenDocuments) {
+			int count = workspace.OpenDocuments.Count;
+
+			actions.File.Close.Activate ();
+
+			// If we still have the same number of open documents,
+			// the user cancelled on a Save prompt.
+			if (count == workspace.OpenDocuments.Count)
+				return;
 		}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.App.Exit.Activated -= Activated;
-		}
-		#endregion
+		// Let everyone know we are quitting
+		actions.App.RaiseBeforeQuit ();
 
-		private void Activated (object sender, EventArgs e)
-		{
-			while (PintaCore.Workspace.HasOpenDocuments) {
-				int count = PintaCore.Workspace.OpenDocuments.Count;
-
-				PintaCore.Actions.File.Close.Activate ();
-
-				// If we still have the same number of open documents,
-				// the user cancelled on a Save prompt.
-				if (count == PintaCore.Workspace.OpenDocuments.Count)
-					return;
-			}
-
-			// Let everyone know we are quitting
-			PintaCore.Actions.App.RaiseBeforeQuit ();
-
-			(PintaCore.Chrome.Application as GLib.Application).Quit ();
-		}
+		chrome.Application.Quit ();
 	}
 }

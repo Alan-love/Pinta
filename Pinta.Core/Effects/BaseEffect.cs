@@ -25,176 +25,194 @@
 // THE SOFTWARE.
 
 using System;
+using System.ComponentModel;
+using System.Threading.Tasks;
 using Cairo;
-using Pinta.Core;
 
-// TODO-GTK3 (addins)
-// [assembly: AddinRoot ("Pinta", PintaCore.ApplicationVersion)]
+namespace Pinta.Core;
 
-namespace Pinta.Core
+/// <summary>
+/// The base class for all effects and adjustments.
+/// </summary>
+[Mono.Addins.TypeExtensionPoint]
+public abstract class BaseEffect
 {
 	/// <summary>
-	/// The base class for all effects and adjustments.
+	/// Specifies whether Render() can be called separately (and possibly in parallel) for different sub-regions of the image.
+	/// If false, Render () will be called once with the entire region the effect is applied to.
+	/// This is required for effects which cannot be applied independently to each pixel, e.g. if the effect accumulates information from previously processed pixels.
 	/// </summary>
-	// TODO-GTK3 (addins)
-	// [TypeExtensionPoint]
-	public abstract class BaseEffect
+	public abstract bool IsTileable { get; }
+
+	/// <summary>
+	/// Returns the name of the effect, displayed to the user in the Adjustments/Effects menu and history pad.
+	/// </summary>
+	public abstract string Name { get; }
+
+	/// <summary>
+	/// Returns the icon to use for the effect in the Adjustments/Effects menu and history pad.
+	/// </summary>
+	public virtual string Icon => Resources.Icons.EffectsDefault;
+
+	/// <summary>
+	/// Returns whether this effect can display a configuration dialog to the user. (Implemented by LaunchConfiguration ().)
+	/// </summary>
+	public virtual bool IsConfigurable => false;
+
+	/// <summary>
+	/// Returns the keyboard shortcut for this adjustment. Only affects adjustments, not effects. Default is no shortcut.
+	/// </summary>
+	public virtual string? AdjustmentMenuKey => null;
+
+	/// <summary>
+	/// Returns the modifier(s) to the keyboard shortcut. Only affects adjustments, not effects. Default is Primary+Shift.
+	/// </summary>
+	public virtual string AdjustmentMenuKeyModifiers => "<Primary><Shift>";
+
+	/// <summary>
+	/// Returns the menu category for an effect. Only affects effects, not adjustments. Default is "General".
+	/// </summary>
+	public virtual string EffectMenuCategory => "General";
+
+	/// <summary>
+	/// The user configurable data this effect uses.
+	/// </summary>
+	public EffectData? EffectData { get; protected set; }
+
+	/// <summary>
+	/// Launches the configuration dialog for this effect/adjustment.
+	/// If IsConfigurable is true, the ConfigDialogResponse event will be invoked when the user accepts or cancels the dialog.
+	/// </summary>
+	/// <returns>Whether the user's response was positive or negative</returns>
+	public virtual Task<bool> LaunchConfiguration ()
 	{
-		/// <summary>
-		/// Returns the name of the effect, displayed to the user in the Adjustments/Effects menu and history pad.
-		/// </summary>
-		public abstract string Name { get; }
+		if (IsConfigurable)
+			throw new NotImplementedException ($"{GetType ()} is marked as configurable, but has not implemented LaunchConfiguration");
 
-		/// <summary>
-		/// Returns the icon to use for the effect in the Adjustments/Effects menu and history pad.
-		/// </summary>
-		public virtual string Icon { get { return "Menu.Effects.Default.png"; } }
+		return Task.FromResult (true); // Placeholder
+	}
 
-		/// <summary>
-		/// Returns whether this effect can display a configuration dialog to the user. (Implemented by LaunchConfiguration ().)
-		/// </summary>
-		public virtual bool IsConfigurable { get { return false; } }
+	public virtual async Task<bool> LaunchConfiguration (ILivePreviewSession session)
+	{
+		EffectData? data = EffectData;
 
-		/// <summary>
-		/// Returns the keyboard shortcut for this adjustment. Only affects adjustments, not effects. Default is no shortcut.
-		/// </summary>
-		public virtual string? AdjustmentMenuKey { get { return null; } }
+		if (data is null)
+			return await LaunchConfiguration ();
 
-		/// <summary>
-		/// Returns the modifier(s) to the keyboard shortcut. Only affects adjustments, not effects. Default is Primary+Shift.
-		/// </summary>
-		public virtual string AdjustmentMenuKeyModifiers { get { return "<Primary><Shift>"; } }
+		data.PropertyChanged += OnDataChanged;
 
-		/// <summary>
-		/// Returns the menu category for an effect. Only affects effects, not adjustments. Default is "General".
-		/// </summary>
-		public virtual string EffectMenuCategory { get { return "General"; } }
-
-		/// <summary>
-		/// The user configurable data this effect uses.
-		/// </summary>
-		public EffectData? EffectData { get; protected set; }
-
-		/// <summary>
-		/// Launches the configuration dialog for this effect/adjustment.
-		/// </summary>
-		/// <returns>Whether the user accepted or cancelled the configuration dialog. (true: accept, false: cancel)</returns>
-		public virtual bool LaunchConfiguration ()
-		{
-			if (IsConfigurable)
-				throw new NotImplementedException (string.Format ("{0} is marked as configurable, but has not implemented LaunchConfiguration", this.GetType ()));
-
-			return false;
+		try {
+			return await LaunchConfiguration ();
+		} finally {
+			data.PropertyChanged -= OnDataChanged;
 		}
 
-		#region Overrideable Render Methods
-		/// <summary>
-		/// Performs the actual work of rendering an effect. Do not call base.Render ().
-		/// </summary>
-		/// <param name="src">The source surface. DO NOT MODIFY.</param>
-		/// <param name="dst">The destination surface.</param>
-		/// <param name="rois">An array of rectangles of interest (roi) specifying the area(s) to modify. Only these areas should be modified.</param>
-		public virtual void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			foreach (var rect in rois)
-				Render (src, dst, rect);
-		}
+		void OnDataChanged (object? o, PropertyChangedEventArgs e) =>
+			session.NotifyChanged ();
+	}
 
-		/// <summary>
-		/// Performs the actual work of rendering an effect. Do not call base.Render ().
-		/// </summary>
-		/// <param name="src">The source surface. DO NOT MODIFY.</param>
-		/// <param name="dst">The destination surface.</param>
-		/// <param name="roi">A rectangle of interest (roi) specifying the area to modify. Only these areas should be modified</param>
-		protected unsafe virtual void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle roi)
-		{
-			ColorBgra* src_data_ptr = (ColorBgra*) src.DataPtr;
-			int src_width = src.Width;
-			ColorBgra* dst_data_ptr = (ColorBgra*) dst.DataPtr;
-			int dst_width = dst.Width;
+	#region Overridable Render Methods
 
-			for (int y = roi.Y; y <= roi.GetBottom (); ++y) {
-				ColorBgra* srcPtr = src.GetPointAddressUnchecked (src_data_ptr, src_width, roi.X, y);
-				ColorBgra* dstPtr = dst.GetPointAddressUnchecked (dst_data_ptr, dst_width, roi.X, y);
-				Render (srcPtr, dstPtr, roi.Width);
-			}
-		}
-
-		/// <summary>
-		/// Performs the actual work of rendering an effect. This overload represent a single line of the image. Do not call base.Render ().
-		/// </summary>
-		/// <param name="src">The source surface. DO NOT MODIFY.</param>
-		/// <param name="dst">The destination surface.</param>
-		/// <param name="length">The number of pixels to render.</param>
-		protected unsafe virtual void Render (ColorBgra* src, ColorBgra* dst, int length)
-		{
-			while (length > 0) {
-				*dst = Render (*src);
-				++dst;
-				++src;
-				--length;
-			}
-		}
-
-		/// <summary>
-		/// Performs the actual work of rendering an effect. This overload represent a single pixel of the image.
-		/// </summary>
-		/// <param name="color">The color of the source surface pixel.</param>
-		/// <returns>The color to be used for the destination pixel.</returns>
-		protected virtual ColorBgra Render (ColorBgra color)
-		{
-			return color;
-		}
-		#endregion
-
-		// Effects that have any configuration state which is changed
-		// during live preview, and this this state is stored in
-		// non-value-type fields should override this method.
-		// Generally this state should be stored in the effect data
-		// class, not in the effect.
-		/// <summary>
-		/// Clones this effect so the live preview system has a copy that won't change while it is working.  Only override this when a MemberwiseClone is not enough.
-		/// </summary>
-		/// <returns>An identical copy of this effect.</returns>
-		public virtual BaseEffect Clone ()
-		{
-			var effect = (BaseEffect) this.MemberwiseClone ();
-
-			if (effect.EffectData != null)
-				effect.EffectData = EffectData?.Clone ();
-
-			return effect;
-		}
+	/// <summary>
+	/// Performs the actual work of rendering an effect. Do not call base.Render ().
+	/// </summary>
+	/// <param name="src">The source surface. DO NOT MODIFY.</param>
+	/// <param name="dst">The destination surface.</param>
+	/// <param name="rois">An array of rectangles of interest (roi) specifying the area(s) to modify. Only these areas should be modified.</param>
+	public virtual void Render (ImageSurface src, ImageSurface dst, ReadOnlySpan<RectangleI> rois)
+	{
+		foreach (var rect in rois)
+			Render (src, dst, rect);
 	}
 
 	/// <summary>
-	/// Holds the user configurable data used by this effect.
+	/// Performs the actual work of rendering an effect. Do not call base.Render ().
 	/// </summary>
-	public abstract class EffectData : ObservableObject
+	/// <param name="src">The source surface. DO NOT MODIFY.</param>
+	/// <param name="dst">The destination surface.</param>
+	/// <param name="roi">A rectangle of interest (roi) specifying the area to modify. Only these areas should be modified</param>
+	protected virtual void Render (ImageSurface src, ImageSurface dst, RectangleI roi)
 	{
-		// EffectData classes that have any state stored in non-value-type
-		// fields must override this method, and clone those members.
-		/// <summary>
-		/// Clones this EffectData so the live preview system has a copy that won't change while it is working.  Only override this when a MemberwiseClone is not enough.
-		/// </summary>
-		/// <returns>An identical copy of this EffectData.</returns>
-		public virtual EffectData Clone ()
-		{
-			return (EffectData) this.MemberwiseClone ();
-		}
+		var src_data = src.GetReadOnlyPixelData ();
+		var dst_data = dst.GetPixelData ();
+		int src_width = src.Width;
+		int dst_width = dst.Width;
 
-		/// <summary>
-		/// Fires the PropertyChanged event for this ObservableObject.
-		/// </summary>
-		/// <param name="propertyName">The name of the property that changed.</param>
-		public new void FirePropertyChanged (string? propertyName)
-		{
-			base.FirePropertyChanged (propertyName);
-		}
-
-		/// <summary>
-		/// Returns true if the current values of this EffectData do not modify the image. Returns false if current values modify the image.
-		/// </summary>
-		public virtual bool IsDefault { get { return false; } }
+		for (int y = roi.Y; y <= roi.Bottom; ++y)
+			Render (
+				src_data.Slice (y * src_width + roi.X, roi.Width),
+				dst_data.Slice (y * dst_width + roi.X, roi.Width));
 	}
+
+	/// <summary>
+	/// Performs the actual work of rendering an effect. This overload represent a single line of the image. Do not call base.Render ().
+	/// </summary>
+	/// <param name="src">The source surface. DO NOT MODIFY.</param>
+	/// <param name="dst">The destination surface.</param>
+	/// <param name="length">The number of pixels to render.</param>
+	protected virtual void Render (ReadOnlySpan<ColorBgra> src, Span<ColorBgra> dst)
+	{
+		for (int i = 0; i < src.Length; ++i)
+			dst[i] = Render (src[i]);
+	}
+
+	/// <summary>
+	/// Performs the actual work of rendering an effect. This overload represent a single pixel of the image.
+	/// </summary>
+	/// <param name="color">The color of the source surface pixel.</param>
+	/// <returns>The color to be used for the destination pixel.</returns>
+	protected virtual ColorBgra Render (in ColorBgra color)
+	{
+		return color;
+	}
+
+	#endregion
+
+	// Effects that have any configuration state which is changed
+	// during live preview, and this this state is stored in
+	// non-value-type fields should override this method.
+	// Generally this state should be stored in the effect data
+	// class, not in the effect.
+	/// <summary>
+	/// Clones this effect so the live preview system has a copy that won't change while it is working.  Only override this when a MemberwiseClone is not enough.
+	/// </summary>
+	/// <returns>An identical copy of this effect.</returns>
+	public virtual BaseEffect Clone ()
+	{
+		BaseEffect effect = (BaseEffect) MemberwiseClone ();
+
+		if (effect.EffectData != null)
+			effect.EffectData = EffectData?.Clone ();
+
+		return effect;
+	}
+}
+
+/// <summary>
+/// Holds the user configurable data used by this effect.
+/// </summary>
+public abstract class EffectData : ObservableObject
+{
+	// EffectData classes that have any state stored in non-value-type
+	// fields must override this method, and clone those members.
+	/// <summary>
+	/// Clones this EffectData so the live preview system has a copy that won't change while it is working.  Only override this when a MemberwiseClone is not enough.
+	/// </summary>
+	/// <returns>An identical copy of this EffectData.</returns>
+	public virtual EffectData Clone ()
+		=> (EffectData) MemberwiseClone ();
+
+	/// <summary>
+	/// Fires the PropertyChanged event for this ObservableObject.
+	/// </summary>
+	/// <param name="propertyName">The name of the property that changed.</param>
+	public new void FirePropertyChanged (string? propertyName)
+	{
+		base.FirePropertyChanged (propertyName);
+	}
+
+	/// <summary>
+	/// Returns true if the current values of this EffectData do not modify the image. Returns false if current values modify the image.
+	/// </summary>
+	public virtual bool IsDefault => false;
 }

@@ -26,175 +26,59 @@
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
-using System.Linq;
+using System.Collections.ObjectModel;
 using Cairo;
-using Gtk;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class Palette
 {
-	public sealed class Palette
+	private readonly List<Color> colors;
+	public ReadOnlyCollection<Color> Colors { get; }
+
+	public Palette (IEnumerable<Color> initialColors)
 	{
-		public event EventHandler? PaletteChanged;
+		List<Color> backing = [.. initialColors];
+		colors = backing;
+		Colors = new ReadOnlyCollection<Color> (backing);
+	}
 
-		private List<Color> colors;
+	public event EventHandler? PaletteChanged;
 
-		private Palette ()
-		{
-			colors = new List<Color> ();
+	private void OnPaletteChanged ()
+	{
+		PaletteChanged?.Invoke (this, EventArgs.Empty);
+	}
+
+	public void SetColor (int index, Color value)
+	{
+		colors[index] = value;
+		OnPaletteChanged ();
+	}
+
+	public void Resize (int newSize)
+	{
+		int difference = newSize - Colors.Count;
+
+		if (difference > 0) {
+			for (int i = 0; i < difference; i++)
+				colors.Add (new Color (1, 1, 1));
+		} else {
+			colors.RemoveRange (newSize, -difference);
 		}
 
-		private void OnPaletteChanged ()
-		{
-			if (PaletteChanged != null)
-				PaletteChanged (this, EventArgs.Empty);
-		}
+		colors.TrimExcess ();
+		OnPaletteChanged ();
+	}
 
-		public int Count {
-			get {
-				return colors.Count;
-			}
-		}
-
-		public Color this[int index] {
-			get {
-				return colors[index];
-			}
-
-			set {
-				colors[index] = value;
-				OnPaletteChanged ();
-			}
-		}
-
-		public void Resize (int newSize)
-		{
-			int difference = newSize - Count;
-
-			if (difference > 0) {
-				for (int i = 0; i < difference; i++)
-					colors.Add (new Color (1, 1, 1));
-			} else {
-				colors.RemoveRange (newSize, -difference);
-			}
-
-			colors.TrimExcess ();
-			OnPaletteChanged ();
-		}
-
-		public static Palette GetDefault ()
-		{
-			Palette p = new Palette ();
-			p.LoadDefault ();
-			return p;
-		}
-
-		public static Palette FromFile (string fileName)
-		{
-			Palette p = new Palette ();
-			p.Load (fileName);
-			return p;
-		}
-
-		public void LoadDefault ()
-		{
-			colors.Clear ();
-
-			colors.Add (new Color (255 / 255f, 255 / 255f, 255 / 255f));
-			colors.Add (new Color (0 / 255f, 0 / 255f, 0 / 255f));
-
-			colors.Add (new Color (160 / 255f, 160 / 255f, 160 / 255f));
-			colors.Add (new Color (128 / 255f, 128 / 255f, 128 / 255f));
-
-			colors.Add (new Color (64 / 255f, 64 / 255f, 64 / 255f));
-			colors.Add (new Color (48 / 255f, 48 / 255f, 48 / 255f));
-
-			colors.Add (new Color (255 / 255f, 0 / 255f, 0 / 255f));
-			colors.Add (new Color (255 / 255f, 127 / 255f, 127 / 255f));
-
-			colors.Add (new Color (255 / 255f, 106 / 255f, 0 / 255f));
-			colors.Add (new Color (255 / 255f, 178 / 255f, 127 / 255f));
-
-			colors.Add (new Color (255 / 255f, 216 / 255f, 0 / 255f));
-			colors.Add (new Color (255 / 255f, 233 / 255f, 127 / 255f));
-
-			colors.Add (new Color (182 / 255f, 255 / 255f, 0 / 255f));
-			colors.Add (new Color (218 / 255f, 255 / 255f, 127 / 255f));
-
-			colors.Add (new Color (76 / 255f, 255 / 255f, 0 / 255f));
-			colors.Add (new Color (165 / 255f, 255 / 255f, 127 / 255f));
-
-			colors.Add (new Color (0 / 255f, 255 / 255f, 33 / 255f));
-			colors.Add (new Color (127 / 255f, 255 / 255f, 142 / 255f));
-
-			colors.Add (new Color (0 / 255f, 255 / 255f, 144 / 255f));
-			colors.Add (new Color (127 / 255f, 255 / 255f, 197 / 255f));
-
-			colors.Add (new Color (0 / 255f, 255 / 255f, 255 / 255f));
-			colors.Add (new Color (127 / 255f, 255 / 255f, 255 / 255f));
-
-			colors.Add (new Color (0 / 255f, 148 / 255f, 255 / 255f));
-			colors.Add (new Color (127 / 255f, 201 / 255f, 255 / 255f));
-
-			colors.Add (new Color (0 / 255f, 38 / 255f, 255 / 255f));
-			colors.Add (new Color (127 / 255f, 146 / 255f, 255 / 255f));
-
-			colors.Add (new Color (72 / 255f, 0 / 255f, 255 / 255f));
-			colors.Add (new Color (161 / 255f, 127 / 255f, 255 / 255f));
-
-			colors.Add (new Color (178 / 255f, 0 / 255f, 255 / 255f));
-			colors.Add (new Color (214 / 255f, 127 / 255f, 255 / 255f));
-
-			colors.Add (new Color (255 / 255f, 0 / 255f, 220 / 255f));
-			colors.Add (new Color (255 / 255f, 127 / 255f, 237 / 255f));
-
-			colors.Add (new Color (255 / 255f, 0 / 255f, 110 / 255f));
-			colors.Add (new Color (255 / 255f, 127 / 255f, 182 / 255f));
-
-			colors.TrimExcess ();
-			OnPaletteChanged ();
-		}
-
-		public void Load (string fileName)
-		{
-			try {
-				var loader = PintaCore.System.PaletteFormats.GetFormatByFilename (fileName)?.Loader;
-
-				if (loader == null)
-					throw new FormatException ();
-
-				colors = loader.Load (fileName);
-				colors.TrimExcess ();
-				OnPaletteChanged ();
-			} catch (FormatException e) {
-				var parent = PintaCore.Chrome.MainWindow;
-				ShowUnsupportedFormatDialog (parent, fileName, "Unsupported palette format", e.ToString ());
-			}
-		}
-
-		public void Save (string fileName, IPaletteSaver saver)
-		{
-			saver.Save (colors, fileName);
-		}
-
-		private void ShowUnsupportedFormatDialog (Window parent, string filename, string primaryText, string details)
-		{
-			string markup = "<span weight=\"bold\" size=\"larger\">{0}</span>\n\n{1}";
-
-			string secondaryText = Translations.GetString ("Could not open file: {0}", filename);
-			secondaryText += string.Format ("\n\n{0}\n", Translations.GetString ("Pinta supports the following palette formats:"));
-			var extensions = from format in PintaCore.System.PaletteFormats.Formats
-					 where format.Loader != null
-					 from extension in format.Extensions
-					 where char.IsLower (extension.FirstOrDefault ())
-					 orderby extension
-					 select extension;
-
-			secondaryText += String.Join (", ", extensions);
-
-			string message = string.Format (markup, primaryText, secondaryText);
-			PintaCore.Chrome.ShowUnsupportedFormatDialog (parent, message, details);
-		}
+	/// <summary>
+	/// Replaces existing colors with new colors
+	/// </summary>
+	public void Load (IEnumerable<Color> newColors)
+	{
+		colors.Clear ();
+		colors.AddRange (newColors);
+		colors.TrimExcess ();
+		OnPaletteChanged ();
 	}
 }

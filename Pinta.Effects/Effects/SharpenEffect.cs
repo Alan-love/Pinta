@@ -8,59 +8,54 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class SharpenEffect : BaseEffect
 {
-	public class SharpenEffect : LocalHistogramEffect
+	public override string Icon => Pinta.Resources.Icons.EffectsPhotoSharpen;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Name => Translations.GetString ("Sharpen");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Photo");
+
+	public SharpenData Data => (SharpenData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public SharpenEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Photo.Sharpen.png"; }
-		}
-
-		public override string Name {
-			get { return Translations.GetString ("Sharpen"); }
-		}
-
-		public override bool IsConfigurable {
-			get { return true; }
-		}
-
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Photo"); }
-		}
-
-		public SharpenData Data { get { return (SharpenData) EffectData!; } } // NRT - Set in constructor
-
-		public SharpenEffect ()
-		{
-			EffectData = new SharpenData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		public unsafe override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			foreach (Gdk.Rectangle rect in rois)
-				RenderRect (Data.Amount, src, dest, rect);
-		}
-
-		public unsafe override ColorBgra Apply (ColorBgra src, int area, int* hb, int* hg, int* hr, int* ha)
-		{
-			ColorBgra median = GetPercentile (50, area, hb, hg, hr, ha);
-			return ColorBgra.Lerp (src, median, -0.5f);
-		}
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new SharpenData ();
 	}
 
-	public class SharpenData : EffectData
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
+
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
 	{
-		[Caption ("Amount"), MinimumValue (1), MaximumValue (20)]
-		public int Amount = 2;
+		LocalHistogram.RenderRect (Apply, Data.Amount, source, destination, roi);
 	}
+
+	private static ColorBgra Apply (ColorBgra src, int area, Span<int> hb, Span<int> hg, Span<int> hr, Span<int> ha)
+	{
+		ColorBgra median = LocalHistogram.GetPercentile (50, area, hb, hg, hr, ha);
+		return ColorBgra.Lerp (src, median, -0.5f);
+	}
+}
+
+public sealed class SharpenData : EffectData
+{
+	[Caption ("Amount")]
+	[MinimumValue (1), MaximumValue (20)]
+	public int Amount { get; set; } = 2;
 }
 

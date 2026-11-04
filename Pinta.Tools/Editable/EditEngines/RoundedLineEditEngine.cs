@@ -1,21 +1,21 @@
-// 
+//
 // RoundedLineEditEngine.cs
-//  
+//
 // Author:
 //       Andrew Davis <andrew.3.1415@gmail.com>
-// 
+//
 // Copyright (c) 2014 Andrew Davis, GSoC 2014
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -26,144 +26,141 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Cairo;
 using Pinta.Core;
 
-namespace Pinta.Tools
+namespace Pinta.Tools;
+
+public sealed class RoundedLineEditEngine : BaseEditEngine
 {
-	public class RoundedLineEditEngine : BaseEditEngine
+	protected override string ShapeName
+		=> Translations.GetString ("Rounded Line Shape");
+
+	public const double DefaultRadius = 20d;
+
+	private double previous_radius = DefaultRadius;
+
+	// NRT - Created in HandleBuildToolBar
+	private Gtk.SpinButton radius = null!;
+	private Gtk.Label radius_label = null!;
+	private Gtk.Separator radius_sep = null!;
+
+	public double Radius {
+
+		get =>
+			(radius != null)
+			? radius.Value
+			: BrushWidth;
+
+		set {
+			if (radius == null)
+				return;
+
+			radius.Value = value;
+
+			if (SelectedShapeEngine is not RoundedLineEngine roundedLineEngine)
+				return;
+
+			roundedLineEngine.Radius = Radius;
+
+			StorePreviousSettings ();
+			DrawActiveShape (false, false, true, false, false);
+		}
+	}
+
+	public override void OnSaveSettings (ISettingsService settings, string toolPrefix)
 	{
-		protected override string ShapeName {
-			get {
-				return Translations.GetString ("Rounded Line Shape");
-			}
+		base.OnSaveSettings (settings, toolPrefix);
+		if (radius is not null)
+			settings.PutSetting (SettingNames.Radius (toolPrefix), (int) radius.Value);
+	}
+
+	protected override void BuildShapeToolBar (Gtk.Box tb, ISettingsService settings, string toolPrefix)
+	{
+		radius_sep ??= GtkExtensions.CreateToolBarSeparator ();
+
+		tb.Append (radius_sep);
+
+		if (radius_label == null) {
+			var radiusText = Translations.GetString ("Radius");
+			radius_label = Gtk.Label.New ($"{radiusText}: ");
 		}
 
-		public const double DefaultRadius = 20d;
+		tb.Append (radius_label);
 
-		protected double previousRadius = DefaultRadius;
+		if (radius == null) {
+			radius = GtkExtensions.CreateToolBarSpinButton (0, 1e5, 1, settings.GetSetting (SettingNames.Radius (toolPrefix), 20));
 
-		// NRT - Created in HandleBuildToolBar
-		protected ToolBarWidget<Gtk.SpinButton> radius = null!;
-		protected ToolBarLabel radius_label = null!;
-		protected Gtk.SeparatorToolItem radius_sep = null!;
-
-		public double Radius {
-			get {
-				if (radius != null)
-					return radius.Widget.Value;
-				else
-					return BrushWidth;
-			}
-
-			set {
-				if (radius != null) {
-					radius.Widget.Value = value;
-
-					ShapeEngine? selEngine = SelectedShapeEngine;
-
-					if (selEngine != null && selEngine.ShapeType == ShapeTypes.RoundedLineSeries) {
-						((RoundedLineEngine) selEngine).Radius = Radius;
-
-						StorePreviousSettings ();
-
-						DrawActiveShape (false, false, true, false, false);
-					}
-				}
-			}
+			radius.OnValueChanged += (o, e) => {
+				//Go through the Get/Set routine.
+				Radius = Radius;
+			};
 		}
 
-		private string RADIUS_SETTING (string prefix) => $"{prefix}-radius";
+		tb.Append (radius);
 
-		public override void OnSaveSettings (ISettingsService settings, string toolPrefix)
-		{
-			base.OnSaveSettings (settings, toolPrefix);
+		base.BuildShapeToolBar (tb, settings, toolPrefix);
+	}
 
-			if (radius is not null)
-				settings.PutSetting (RADIUS_SETTING (toolPrefix), (int) radius.Widget.Value);
-		}
+	private readonly IWorkspaceService workspace;
+	public RoundedLineEditEngine (
+		IServiceProvider services,
+		ShapeTool passedOwner
+	) : base (services, passedOwner)
+	{
+		workspace = services.GetService<IWorkspaceService> ();
+	}
 
-		public override void HandleBuildToolBar (Gtk.Toolbar tb, ISettingsService settings, string toolPrefix)
-		{
-			base.HandleBuildToolBar (tb, settings, toolPrefix);
+	protected override ShapeEngine CreateShape (
+		bool ctrlKey,
+		bool clickedOnControlPoint,
+		PointD prevSelPoint)
+	{
+		Document doc = workspace.ActiveDocument;
 
+		RoundedLineEngine newEngine = new (
+			doc.Layers.CurrentUserLayer,
+			null,
+			Radius,
+			owner.UseAntialiasing,
+			BaseEditEngine.OutlineColor,
+			BaseEditEngine.FillColor,
+			owner.EditEngine.BrushWidth,
+			LineCap.Butt);
 
-			if (radius_sep == null)
-				radius_sep = new Gtk.SeparatorToolItem ();
+		AddRectanglePoints (ctrlKey, clickedOnControlPoint, newEngine, prevSelPoint);
 
-			tb.AppendItem (radius_sep);
+		//Set the new shape's DashPattern option.
+		newEngine.DashPattern = dash_pattern_box.ComboBox!.ComboBox.GetActiveText ()!; // NRT - Code assumes this is not-null
 
-			if (radius_label == null)
-				radius_label = new ToolBarLabel (string.Format ("  {0}: ", Translations.GetString ("Radius")));
+		return newEngine;
+	}
 
-			tb.AppendItem (radius_label);
+	protected override void MovePoint (List<ControlPoint> controlPoints)
+	{
+		MoveRectangularPoint (controlPoints);
+		base.MovePoint (controlPoints);
+	}
 
-			if (radius == null) {
-				radius = new (new Gtk.SpinButton (0, 1e5, 1) { Value = settings.GetSetting (RADIUS_SETTING (toolPrefix), 20) });
+	public override void UpdateToolbarSettings (ShapeEngine engine)
+	{
+		if (engine is not RoundedLineEngine roundedLineEngine)
+			return;
 
-				radius.Widget.ValueChanged += (o, e) => {
-					//Go through the Get/Set routine.
-					Radius = Radius;
-				};
-			}
+		Radius = roundedLineEngine.Radius;
 
-			tb.AppendItem (radius);
-		}
+		base.UpdateToolbarSettings (engine);
+	}
 
+	protected override void RecallPreviousSettings ()
+	{
+		Radius = previous_radius;
+		base.RecallPreviousSettings ();
+	}
 
-		public RoundedLineEditEngine (ShapeTool passedOwner) : base (passedOwner)
-		{
-
-		}
-
-		protected override ShapeEngine CreateShape (bool ctrlKey, bool clickedOnControlPoint, PointD prevSelPoint)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-
-			ShapeEngine newEngine = new RoundedLineEngine (doc.Layers.CurrentUserLayer, null, Radius, owner.UseAntialiasing,
-				BaseEditEngine.OutlineColor, BaseEditEngine.FillColor, owner.EditEngine.BrushWidth);
-
-			AddRectanglePoints (ctrlKey, clickedOnControlPoint, newEngine, prevSelPoint);
-
-			//Set the new shape's DashPattern option.
-			newEngine.DashPattern = dash_pattern_box.comboBox!.ComboBox.ActiveText; // NRT - Code assumes this is not-null
-
-			return newEngine;
-		}
-
-		protected override void MovePoint (List<ControlPoint> controlPoints)
-		{
-			MoveRectangularPoint (controlPoints);
-
-			base.MovePoint (controlPoints);
-		}
-
-
-		public override void UpdateToolbarSettings (ShapeEngine engine)
-		{
-			if (engine != null && engine.ShapeType == ShapeTypes.RoundedLineSeries) {
-				RoundedLineEngine rLEngine = (RoundedLineEngine) engine;
-
-				Radius = rLEngine.Radius;
-
-				base.UpdateToolbarSettings (engine);
-			}
-		}
-
-		protected override void RecallPreviousSettings ()
-		{
-			Radius = previousRadius;
-
-			base.RecallPreviousSettings ();
-		}
-
-		protected override void StorePreviousSettings ()
-		{
-			previousRadius = Radius;
-
-			base.StorePreviousSettings ();
-		}
+	protected override void StorePreviousSettings ()
+	{
+		previous_radius = Radius;
+		base.StorePreviousSettings ();
 	}
 }

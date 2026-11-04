@@ -25,163 +25,225 @@
 // THE SOFTWARE.
 
 using System;
-using Gtk;
+using System.Threading.Tasks;
+using Mono.Addins.Localization;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public interface IChromeService
 {
-	public class ChromeManager
-	{
-		// NRT - These are all initialized via the Initialize* functions
-		// but it would be nice to rewrite it to provably non-null.
-		private Toolbar tool_toolbar = null!;
-		private Window main_window = null!;
-		private IProgressDialog progress_dialog = null!;
-		private bool main_window_busy;
-		private Gdk.Point last_canvas_cursor_point;
-		private Toolbar main_toolbar = null!;
-		private ErrorDialogHandler error_dialog_handler = null!;
-		private UnsupportedFormatDialogHandler unsupported_format_dialog_handler = null!;
+	Gtk.Window MainWindow { get; }
 
-		public Application Application { get; private set; } = null!;
-		public Toolbar ToolToolBar { get { return tool_toolbar; } }
-		public Toolbar MainToolBar { get { return main_toolbar; } }
-		public Window MainWindow { get { return main_window; } }
-		public Statusbar StatusBar { get; private set; } = null!;
-		public Toolbar ToolBox { get; private set; } = null!;
-
-		public IProgressDialog ProgressDialog { get { return progress_dialog; } }
-		public GLib.Menu AdjustmentsMenu { get; private set; } = null!;
-		public GLib.Menu EffectsMenu { get; private set; } = null!;
-
-		public ChromeManager ()
-		{
-		}
-
-		#region Public Properties
-		public Gdk.Point LastCanvasCursorPoint {
-			get { return last_canvas_cursor_point; }
-			set {
-				if (last_canvas_cursor_point != value) {
-					last_canvas_cursor_point = value;
-					OnLastCanvasCursorPointChanged ();
-				}
-			}
-		}
-
-		public bool MainWindowBusy {
-			get { return main_window_busy; }
-			set {
-				main_window_busy = value;
-
-				if (main_window_busy)
-					main_window.Window.Cursor = new Gdk.Cursor (Gdk.CursorType.Watch);
-				else
-					main_window.Window.Cursor = new Gdk.Cursor (Gdk.CursorType.Arrow);
-			}
-		}
-		#endregion
-
-		#region Public Methods
-		public void InitializeApplication (Gtk.Application application)
-		{
-			Application = application;
-		}
-
-		public void InitializeToolToolBar (Toolbar toolToolBar)
-		{
-			tool_toolbar = toolToolBar;
-		}
-
-		public void InitializeMainToolBar (Toolbar mainToolBar)
-		{
-			main_toolbar = mainToolBar;
-		}
-
-		public void InitializeStatusBar (Statusbar statusbar)
-		{
-			StatusBar = statusbar;
-		}
-
-		public void InitializeToolBox (Toolbar toolbox)
-		{
-			ToolBox = toolbox;
-		}
-
-		public void InitializeWindowShell (Window shell)
-		{
-			main_window = shell;
-		}
-
-		public void InitializeMainMenu (GLib.Menu adj_menu, GLib.Menu effects_menu)
-		{
-			AdjustmentsMenu = adj_menu;
-			EffectsMenu = effects_menu;
-		}
-
-		public void InitializeProgessDialog (IProgressDialog progressDialog)
-		{
-			if (progressDialog == null)
-				throw new ArgumentNullException ("progressDialog");
-
-			progress_dialog = progressDialog;
-		}
-
-		public void InitializeErrorDialogHandler (ErrorDialogHandler handler)
-		{
-			error_dialog_handler = handler;
-		}
-
-		public void InitializeUnsupportedFormatDialog (UnsupportedFormatDialogHandler handler)
-		{
-			unsupported_format_dialog_handler = handler;
-		}
-
-		public void ShowErrorDialog (Window parent, string message, string details)
-		{
-			error_dialog_handler (parent, message, details);
-		}
-
-		public void ShowUnsupportedFormatDialog (Window parent, string message, string details)
-		{
-			unsupported_format_dialog_handler (parent, message, details);
-		}
-
-		public void SetStatusBarText (string text)
-		{
-			OnStatusBarTextChanged (text);
-		}
-		#endregion
-
-		#region Protected Methods
-		protected void OnLastCanvasCursorPointChanged ()
-		{
-			if (LastCanvasCursorPointChanged != null)
-				LastCanvasCursorPointChanged (this, EventArgs.Empty);
-		}
-
-		protected void OnStatusBarTextChanged (string text)
-		{
-			if (StatusBarTextChanged != null)
-				StatusBarTextChanged (this, new TextChangedEventArgs (text));
-		}
-		#endregion
-
-		#region Public Events
-		public event EventHandler? LastCanvasCursorPointChanged;
-		public event EventHandler<TextChangedEventArgs>? StatusBarTextChanged;
-		#endregion
-	}
-
-	public interface IProgressDialog
-	{
-		void Show ();
-		void Hide ();
-		string Title { get; set; }
-		string Text { get; set; }
-		double Progress { get; set; }
-		event EventHandler<EventArgs> Canceled;
-	}
-
-	public delegate void ErrorDialogHandler (Window parent, string message, string details);
-	public delegate void UnsupportedFormatDialogHandler (Window parent, string message, string details);
+	Task<bool> LaunchSimpleEffectDialog (
+		Gtk.Window parent,
+		BaseEffect effect,
+		IAddinLocalizer localizer,
+		IWorkspaceService workspace,
+		Action<string?> onChanged);
 }
+
+public static class ChromeExtensions
+{
+	/// <remarks>Notifies of property changes, so not equivalent to an empty handler</remarks>
+	[Obsolete ("Use overload with onChanged parameter instead")]
+	public static Task<bool> LaunchSimpleEffectDialog (
+		this IChromeService chrome,
+		Gtk.Window parent,
+		BaseEffect effect,
+		IAddinLocalizer localizer,
+		IWorkspaceService workspace)
+	{
+		return chrome.LaunchSimpleEffectDialog (
+			parent,
+			effect,
+			localizer,
+			workspace,
+			onChanged: p => effect.EffectData?.FirePropertyChanged (p));
+	}
+}
+
+public sealed class ChromeManager : IChromeService
+{
+	private PointI last_canvas_cursor_point;
+	private bool main_window_busy;
+
+	// NRT - These are all initialized via the Initialize* functions
+	// but it would be nice to rewrite it to provably non-null.
+	public Gtk.Application Application { get; private set; } = null!;
+	public Gtk.Window MainWindow { get; private set; } = null!;
+	public Gtk.Widget Dock { get; private set; } = null!;
+	public Gtk.Widget ImageTabsNotebook { get; private set; } = null!;
+	private IProgressDialog progress_dialog = null!;
+	private ErrorDialogHandler error_dialog_handler = null!;
+	private MessageDialogHandler message_dialog_handler = null!;
+	private SimpleEffectDialogHandler simple_effect_dialog_handler = null!;
+
+	public Gtk.Box? MainToolBar { get; private set; }
+	public Gtk.Box ToolToolBar { get; private set; } = null!;
+	public Gtk.Widget ToolBox { get; private set; } = null!;
+	public Gtk.Box StatusBar { get; private set; } = null!;
+
+	public IProgressDialog ProgressDialog => progress_dialog;
+	public Gio.Menu AdjustmentsMenu { get; private set; } = null!;
+	public Gio.Menu EffectsMenu { get; private set; } = null!;
+
+	public PointI LastCanvasCursorPoint {
+		get => last_canvas_cursor_point;
+		set {
+			if (last_canvas_cursor_point != value) {
+				last_canvas_cursor_point = value;
+				OnLastCanvasCursorPointChanged ();
+			}
+		}
+	}
+
+	public bool MainWindowBusy {
+		get => main_window_busy;
+		set {
+			main_window_busy = value;
+
+			if (main_window_busy)
+				MainWindow.Cursor = Gdk.Cursor.NewFromName (Pinta.Resources.StandardCursors.Progress, null);
+			else
+				MainWindow.Cursor = Gdk.Cursor.NewFromName (Pinta.Resources.StandardCursors.Default, null);
+		}
+	}
+
+	public void InitializeApplication (Gtk.Application application)
+	{
+		Application = application;
+	}
+
+	public void InitializeWindowShell (Gtk.Window shell)
+	{
+		MainWindow = shell;
+	}
+
+	public void InitializeToolToolBar (Gtk.Box toolToolBar)
+	{
+		ToolToolBar = toolToolBar;
+	}
+
+	public void InitializeMainToolBar (Gtk.Box mainToolBar)
+	{
+		MainToolBar = mainToolBar;
+	}
+
+	public void InitializeStatusBar (Gtk.Box statusbar)
+	{
+		StatusBar = statusbar;
+	}
+
+	public void InitializeToolBox (Gtk.Widget toolbox)
+	{
+		ToolBox = toolbox;
+	}
+
+	public void InitializeDock (Gtk.Widget dock)
+	{
+		Dock = dock;
+	}
+
+	public void InitializeImageTabsNotebook (Gtk.Widget notebook)
+	{
+		ImageTabsNotebook = notebook;
+	}
+
+	public void InitializeMainMenu (Gio.Menu adj_menu, Gio.Menu effects_menu)
+	{
+		AdjustmentsMenu = adj_menu;
+		EffectsMenu = effects_menu;
+	}
+
+	public void InitializeProgessDialog (IProgressDialog progressDialog)
+	{
+		progress_dialog = progressDialog;
+	}
+
+	public void InitializeErrorDialogHandler (ErrorDialogHandler handler)
+	{
+		error_dialog_handler = handler;
+	}
+
+	public void InitializeMessageDialog (MessageDialogHandler handler)
+	{
+		message_dialog_handler = handler;
+	}
+
+	public void InitializeSimpleEffectDialog (SimpleEffectDialogHandler handler)
+	{
+		simple_effect_dialog_handler = handler;
+	}
+
+	public async Task ShowErrorDialog (
+		Gtk.Window parent,
+		string message,
+		string body,
+		string details)
+	{
+		ErrorDialogResponse response = await error_dialog_handler (parent, message, body, details);
+		switch (response) {
+			case ErrorDialogResponse.Bug:
+				PintaCore.Actions.Help.Bugs.Activate ();
+				break;
+		}
+	}
+
+	public Task ShowMessageDialog (Gtk.Window parent, string message, string body)
+	{
+		return message_dialog_handler (parent, message, body);
+	}
+
+	public void SetStatusBarText (string text)
+	{
+		OnStatusBarTextChanged (text);
+	}
+
+	public Task<bool> LaunchSimpleEffectDialog (
+		Gtk.Window parent,
+		BaseEffect effect,
+		IAddinLocalizer localizer,
+		IWorkspaceService workspace,
+		Action<string?> onChanged)
+
+	{
+		return simple_effect_dialog_handler (
+			parent,
+			effect,
+			localizer,
+			workspace,
+			onChanged);
+	}
+
+	private void OnLastCanvasCursorPointChanged ()
+	{
+		LastCanvasCursorPointChanged?.Invoke (this, EventArgs.Empty);
+	}
+
+	private void OnStatusBarTextChanged (string text)
+	{
+		StatusBarTextChanged?.Invoke (this, new TextChangedEventArgs (text));
+	}
+
+	public event EventHandler? LastCanvasCursorPointChanged;
+	public event EventHandler<TextChangedEventArgs>? StatusBarTextChanged;
+}
+
+public interface IProgressDialog
+{
+	void Show ();
+	void Hide ();
+	string Title { get; set; }
+	string Text { get; set; }
+	double Progress { get; set; }
+	event EventHandler Canceled;
+}
+
+public delegate Task<ErrorDialogResponse> ErrorDialogHandler (Gtk.Window parent, string message, string body, string details);
+public delegate Task MessageDialogHandler (Gtk.Window parent, string message, string body);
+public delegate Task<bool> SimpleEffectDialogHandler (
+	Gtk.Window parent,
+	BaseEffect effect,
+	IAddinLocalizer localizer,
+	IWorkspaceService workspace,
+	Action<string?> onChanged);

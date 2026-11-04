@@ -25,55 +25,63 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using Cairo;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class PaintDotNetPalette : IPaletteLoader, IPaletteSaver
 {
-	public class PaintDotNetPalette : IPaletteLoader, IPaletteSaver
+	public List<Color> Load (Gio.File file)
 	{
-		public List<Color> Load (string fileName)
-		{
-			List<Color> colors = new List<Color> ();
-			StreamReader reader = new StreamReader (fileName);
+		List<Color> colors = [];
+		using var stream = new GioStream (file.Read (null));
+		using var reader = new StreamReader (stream);
 
-			try {
-				string? line = reader.ReadLine ();
-				do {
-					if (line is null || line.IndexOf (';') == 0)
-						continue;
+		string? line = reader.ReadLine ();
+		do {
+			if (line is null || line.StartsWith (';'))
+				continue;
 
-					uint color = uint.Parse (line.Substring (0, 8), NumberStyles.HexNumber);
-					double b = (color & 0xff) / 255f;
-					double g = ((color >> 8) & 0xff) / 255f;
-					double r = ((color >> 16) & 0xff) / 255f;
-					double a = (color >> 24) / 255f;
-					colors.Add (new Color (r, g, b, a));
-				} while ((line = reader.ReadLine ()) != null);
+			colors.Add (ReadColor (line));
 
-				return colors;
-			} finally {
-				reader.Close ();
-			}
-		}
+		} while ((line = reader.ReadLine ()) != null);
 
-		public void Save (List<Color> colors, string fileName)
-		{
-			StreamWriter writer = new StreamWriter (fileName);
-			writer.WriteLine ("; Hexadecimal format: aarrggbb");
+		return colors;
+	}
 
-			foreach (Color color in colors) {
-				byte a = (byte) (color.A * 255);
-				byte r = (byte) (color.R * 255);
-				byte g = (byte) (color.G * 255);
-				byte b = (byte) (color.B * 255);
-				writer.WriteLine ("{0:X}", (a << 24) | (r << 16) | (g << 8) | b);
-			}
-			writer.Close ();
-		}
+	private static Color ReadColor (string line)
+	{
+		uint color = uint.Parse (line[..8], NumberStyles.HexNumber);
+		double b = (color & 0xff) / 255f;
+		double g = ((color >> 8) & 0xff) / 255f;
+		double r = ((color >> 16) & 0xff) / 255f;
+		double a = (color >> 24) / 255f;
+		return new Color (r, g, b, a);
+	}
+
+	public void Save (IReadOnlyList<Color> colors, Gio.File file)
+	{
+		using var stream = new GioStream (file.Replace ());
+		using StreamWriter writer = new StreamWriter (stream);
+
+		writer.WriteLine ("; Hexadecimal format: aarrggbb");
+
+		foreach (Color color in colors)
+			writer.WriteLine (RepresentColor (color));
+
+		writer.Close ();
+	}
+
+	private static string RepresentColor (Color color)
+	{
+		byte a = (byte) (color.A * 255);
+		byte r = (byte) (color.R * 255);
+		byte g = (byte) (color.G * 255);
+		byte b = (byte) (color.B * 255);
+		return string.Format ("{0:X}", (a << 24) | (r << 16) | (g << 8) | b);
 	}
 }
 

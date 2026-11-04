@@ -1,21 +1,21 @@
-// 
+//
 // StatusBarColorPaletteWidget.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2020 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,270 +25,425 @@
 // THE SOFTWARE.
 
 using System;
+using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
+using Adw;
 using Cairo;
 using Pinta.Core;
 
-namespace Pinta.Gui.Widgets
+namespace Pinta.Gui.Widgets;
+
+[GObject.Subclass<Gtk.DrawingArea>]
+public sealed partial class StatusBarColorPaletteWidget
 {
-	public class StatusBarColorPaletteWidget : Gtk.DrawingArea
+	private static bool color_picker_active = false;
+
+	private readonly RectangleD primary_rect = new (4, 3, 24, 24);
+	private readonly RectangleD secondary_rect = new (17, 16, 24, 24);
+	private readonly RectangleD swap_rect = new (27, 2, 15, 15);
+	private readonly RectangleD reset_rect = new (2, 27, 15, 15);
+
+	private IChromeService chrome = null!; // NRT - set by factory method
+	private IPaletteService palette = null!;
+	private ISystemService system = null!;
+
+	private RectangleD palette_rect;
+	private RectangleD recent_palette_rect;
+
+	partial void Initialize ()
 	{
-		private Rectangle primary_rect = new Rectangle (4, 3, 24, 24);
-		private Rectangle secondary_rect = new Rectangle (17, 16, 24, 24);
-		private Rectangle swap_rect = new Rectangle (27, 2, 15, 15);
-		private Rectangle reset_rect = new Rectangle (2, 27, 15, 15);
+		HasTooltip = true;
+		OnQueryTooltip += HandleQueryTooltip;
 
-		private Rectangle palette_rect;
-		private Rectangle recent_palette_rect;
+		HeightRequest = PaletteWidget.WIDGET_HEIGHT;
 
-		const int PALETTE_ROWS = 2;
-		const int SWATCH_SIZE = 19;
-		const int WIDGET_HEIGHT = 42;
-		const int PALETTE_MARGIN = 10;
+		OnResize += (_, e) => HandleSizeAllocated (e);
+		SetDrawFunc ((area, context, width, height) => Draw (context));
 
-		private readonly Gdk.Pixbuf swap_icon;
-		private readonly Gdk.Pixbuf reset_icon;
+		// Handle mouse clicks.
+		Gtk.GestureClick click_gesture = Gtk.GestureClick.New ();
+		click_gesture.SetButton (0); // Listen for all mouse buttons.
+		click_gesture.OnReleased += (_, e) => {
+			HandleClick (new PointD (e.X, e.Y), click_gesture.GetCurrentButton (), click_gesture.GetCurrentEventState ());
+			click_gesture.SetState (Gtk.EventSequenceState.Claimed);
+		};
+		AddController (click_gesture);
+	}
 
-		public StatusBarColorPaletteWidget ()
-		{
-			AddEvents ((int) Gdk.EventMask.ButtonPressMask);
+	private void Configure (IChromeService chrome, IPaletteService palette, ISystemService system)
+	{
+		this.chrome = chrome;
+		this.palette = palette;
+		this.system = system;
 
-			swap_icon = PintaCore.Resources.GetIcon ("ColorPalette.SwapIcon.png");
-			reset_icon = PintaCore.Resources.GetIcon ("ColorPalette.ResetIcon.png");
+		palette.PrimaryColorChanged += new EventHandler (Palette_ColorChanged);
+		palette.SecondaryColorChanged += new EventHandler (Palette_ColorChanged);
+		palette.RecentColorsChanged += new EventHandler (Palette_ColorChanged);
+		palette.CurrentPalette.PaletteChanged += new EventHandler (Palette_ColorChanged);
+	}
 
-			HasTooltip = true;
-			QueryTooltip += HandleQueryTooltip;
+	public static StatusBarColorPaletteWidget New (IChromeService chrome, IPaletteService palette, ISystemService system)
+	{
+		StatusBarColorPaletteWidget widget = NewWithProperties ([]);
+		widget.Configure (chrome, palette, system);
+		return widget;
+	}
 
-			PintaCore.Palette.PrimaryColorChanged += new EventHandler (Palette_ColorChanged);
-			PintaCore.Palette.SecondaryColorChanged += new EventHandler (Palette_ColorChanged);
-			PintaCore.Palette.RecentColorsChanged += new EventHandler (Palette_ColorChanged);
-			PintaCore.Palette.CurrentPalette.PaletteChanged += new EventHandler (Palette_ColorChanged);
+	private async void HandleClick (PointD point, uint button, Gdk.ModifierType state)
+	{
+		var element = GetElementAtPoint (point);
 
-			HeightRequest = WIDGET_HEIGHT;
-		}
+		switch (element) {
 
-		protected override bool OnButtonPressEvent (Gdk.EventButton ev)
-		{
-			var point = ev.GetPoint ();
+			case WidgetElement.PrimaryColor:
+			case WidgetElement.SecondaryColor:
 
-			switch (GetElementAtPoint (point)) {
-				case WidgetElement.PrimaryColor:
-					PintaCore.Palette.PrimaryColor = GetUserChosenColor (PintaCore.Palette.PrimaryColor, Translations.GetString ("Choose Primary Color"));
+				if (color_picker_active)
 					break;
-				case WidgetElement.SecondaryColor:
-					PintaCore.Palette.SecondaryColor = GetUserChosenColor (PintaCore.Palette.SecondaryColor, Translations.GetString ("Choose Secondary Color"));
-					break;
-				case WidgetElement.SwapColors:
-					var temp = PintaCore.Palette.PrimaryColor;
 
-					// Swapping should not trigger adding colors to recently used palette
-					PintaCore.Palette.SetColor (true, PintaCore.Palette.SecondaryColor, false);
-					PintaCore.Palette.SetColor (false, temp, false);
+				color_picker_active = true;
 
-					break;
-				case WidgetElement.ResetColors:
-					PintaCore.Palette.PrimaryColor = new Color (0, 0, 0);
-					PintaCore.Palette.SecondaryColor = new Color (1, 1, 1);
+				try {
+					bool primarySelected = element switch {
+						WidgetElement.PrimaryColor => true,
+						WidgetElement.SecondaryColor => false,
+						_ => throw new UnreachableException ()
+					};
 
-					break;
-				case WidgetElement.Palette:
+					PaletteColors? choices = await RunColorPicker (primarySelected);
 
-					var index = GetSwatchAtLocation (point);
-
-					if (index < 0)
+					if (choices is null)
 						break;
 
-					if (ev.Button == 3)
-						PintaCore.Palette.SecondaryColor = PintaCore.Palette.CurrentPalette[index];
-					else if (ev.Button == 1)
-						PintaCore.Palette.PrimaryColor = PintaCore.Palette.CurrentPalette[index];
-					else
-						PintaCore.Palette.CurrentPalette[index] = GetUserChosenColor (PintaCore.Palette.CurrentPalette[index], Translations.GetString ("Choose Palette Color"));
+					if (palette.PrimaryColor != choices.Primary)
+						palette.PrimaryColor = choices.Primary;
 
+					if (palette.SecondaryColor != choices.Secondary)
+						palette.SecondaryColor = choices.Secondary;
+				} finally {
+					color_picker_active = false;
+				}
+
+				break;
+
+			case WidgetElement.SwapColors:
+
+				Color temp = palette.PrimaryColor;
+
+				// Swapping should not trigger adding colors to recently used palette
+				palette.SetColor (true, palette.SecondaryColor, false);
+				palette.SetColor (false, temp, false);
+
+				break;
+
+			case WidgetElement.ResetColors:
+
+				palette.PrimaryColor = new Color (0, 0, 0);
+				palette.SecondaryColor = new Color (1, 1, 1);
+
+				break;
+
+			case WidgetElement.Palette:
+
+				int index = PaletteWidget.GetSwatchAtLocation (palette, point, palette_rect);
+
+				if (index < 0)
 					break;
-				case WidgetElement.RecentColorsPalette:
 
-					var recent_index = GetSwatchAtLocation (point, true);
+				bool isCtrlPressed = state.IsControlPressed ();
+				if (button == GtkExtensions.MOUSE_RIGHT_BUTTON) {
+					palette.SecondaryColor = palette.CurrentPalette.Colors[index];
+				} else if (button == GtkExtensions.MOUSE_LEFT_BUTTON && !isCtrlPressed) {
+					palette.PrimaryColor = palette.CurrentPalette.Colors[index];
+				} else if (button == GtkExtensions.MOUSE_MIDDLE_BUTTON ||
+					   (button == GtkExtensions.MOUSE_LEFT_BUTTON && isCtrlPressed)) {
+					SingleColor pick = new (palette.CurrentPalette.Colors[index]);
+					var colors = await GetUserChosenColor (
+						pick,
+						Translations.GetString ("Choose Palette Color"));
 
-					if (recent_index < 0)
-						break;
+					if (colors != null)
+						palette.CurrentPalette.SetColor (index, colors.Color);
+				}
 
-					if (ev.Button == 3)
-						PintaCore.Palette.SetColor (false, PintaCore.Palette.RecentlyUsedColors.ElementAt (recent_index), false);
-					else if (ev.Button == 1)
-						PintaCore.Palette.SetColor (true, PintaCore.Palette.RecentlyUsedColors.ElementAt (recent_index), false);
+				break;
 
+			case WidgetElement.RecentColorsPalette:
+
+				int recent_index = PaletteWidget.GetSwatchAtLocation (palette, point, recent_palette_rect, true);
+
+				if (recent_index < 0)
 					break;
-			}
 
-			return base.OnButtonPressEvent (ev);
+				Color recentColor = palette.RecentlyUsedColors.ElementAt (recent_index);
+
+				if (button == GtkExtensions.MOUSE_RIGHT_BUTTON) {
+					palette.SetColor (false, recentColor, false);
+				} else if (button == GtkExtensions.MOUSE_LEFT_BUTTON) {
+					palette.SetColor (true, recentColor, false);
+				}
+
+				break;
+		}
+	}
+
+	private void Draw (Context g)
+	{
+		const int TILE_SIZE = 16;
+		using Pattern checkeredPattern =
+			CairoExtensions.CreateTransparentBackgroundPattern (TILE_SIZE);
+
+		// Draw Secondary color swatch
+
+		if (palette.SecondaryColor.A < 1)
+			g.FillRectangle (secondary_rect, checkeredPattern);
+
+		g.FillRectangle (secondary_rect, palette.SecondaryColor);
+		g.DrawRectangle (new RectangleD (secondary_rect.X + 1, secondary_rect.Y + 1, secondary_rect.Width - 2, secondary_rect.Height - 2), new Color (1, 1, 1), 1);
+		g.DrawRectangle (secondary_rect, new Color (0, 0, 0), 1);
+
+		// Draw Primary color swatch
+
+		if (palette.PrimaryColor.A < 1)
+			g.FillRectangle (primary_rect, checkeredPattern);
+
+		g.FillRectangle (primary_rect, palette.PrimaryColor);
+		g.DrawRectangle (new RectangleD (primary_rect.X + 1, primary_rect.Y + 1, primary_rect.Width - 2, primary_rect.Height - 2), new Color (1, 1, 1), 1);
+		g.DrawRectangle (primary_rect, new Color (0, 0, 0), 1);
+
+		// Draw the swap icon.
+		GetStyleContext ().GetColor (out Gdk.RGBA fg_color);
+		Cairo.Color cairo_fg_color = fg_color.ToCairoColor ();
+		DrawSwapIcon (g, cairo_fg_color);
+
+		// Draw the reset icon.
+		double square_size = 0.6 * reset_rect.Width;
+		g.DrawRectangle (new RectangleD (reset_rect.Location (), square_size, square_size), cairo_fg_color, 1);
+		g.FillRectangle (new RectangleD (reset_rect.Right - square_size, reset_rect.Bottom - square_size, square_size, square_size), cairo_fg_color);
+
+		// Draw recently used color swatches
+		var recent = palette.RecentlyUsedColors;
+
+		for (int i = 0; i < recent.Count; i++) {
+
+			RectangleD swatchBounds = PaletteWidget.GetSwatchBounds (palette, i, recent_palette_rect, true);
+			Color recentColor = recent.ElementAt (i);
+
+			if (recentColor.A < 1) // Only draw checkered pattern if there is transparency
+				g.FillRectangle (swatchBounds, checkeredPattern);
+
+			g.FillRectangle (swatchBounds, recentColor);
 		}
 
-		protected override bool OnDrawn (Context g)
-		{
-			base.OnDrawn (g);
+		// Draw color swatches
+		var currentPalette = palette.CurrentPalette;
 
-			// Draw Secondary color swatch
-			g.FillRectangle (secondary_rect, PintaCore.Palette.SecondaryColor);
-			g.DrawRectangle (new Rectangle (secondary_rect.X + 1, secondary_rect.Y + 1, secondary_rect.Width - 2, secondary_rect.Height - 2), new Color (1, 1, 1), 1);
-			g.DrawRectangle (secondary_rect, new Color (0, 0, 0), 1);
+		for (int i = 0; i < currentPalette.Colors.Count; i++) {
 
-			// Draw Primary color swatch
-			g.FillRectangle (primary_rect, PintaCore.Palette.PrimaryColor);
-			g.DrawRectangle (new Rectangle (primary_rect.X + 1, primary_rect.Y + 1, primary_rect.Width - 2, primary_rect.Height - 2), new Color (1, 1, 1), 1);
-			g.DrawRectangle (primary_rect, new Color (0, 0, 0), 1);
+			RectangleD swatchBounds = PaletteWidget.GetSwatchBounds (palette, i, palette_rect);
+			Color paletteColor = currentPalette.Colors[i];
 
-			// Draw swatch icons
-			g.DrawPixbuf (swap_icon, swap_rect.Location ());
-			g.DrawPixbuf (reset_icon, reset_rect.Location ());
+			if (paletteColor.A < 1) // Only draw checkered pattern if there is transparency
+				g.FillRectangle (swatchBounds, checkeredPattern);
 
-			// Draw recently used color swatches
-			var recent = PintaCore.Palette.RecentlyUsedColors;
-
-			for (var i = 0; i < recent.Count (); i++)
-				g.FillRectangle (GetSwatchBounds (i, true), recent.ElementAt (i));
-
-			// Draw color swatches
-			var palette = PintaCore.Palette.CurrentPalette;
-
-			for (var i = 0; i < palette.Count; i++)
-				g.FillRectangle (GetSwatchBounds (i), palette[i]);
-
-			return true;
+			g.FillRectangle (swatchBounds, paletteColor);
 		}
 
-		protected override void OnSizeAllocated (Gdk.Rectangle allocation)
-		{
-			base.OnSizeAllocated (allocation);
+		g.Dispose ();
+	}
 
-			// Store the bounds allocated for our palette
-			var recent_cols = PintaCore.Palette.MaxRecentlyUsedColor / PALETTE_ROWS;
+	private void DrawSwapIcon (Context g, Color color)
+	{
+		const double ARROW_SIZE = 4;
 
-			recent_palette_rect = new Rectangle (50, 2, SWATCH_SIZE * recent_cols, SWATCH_SIZE * PALETTE_ROWS);
-			palette_rect = new Rectangle (recent_palette_rect.GetRight () + PALETTE_MARGIN, 2, AllocatedWidth - recent_palette_rect.GetRight () - PALETTE_MARGIN, SWATCH_SIZE * PALETTE_ROWS);
+		g.Save ();
+		g.LineWidth = 1.5;
+		g.SetSourceColor (color);
+
+		const double RADIUS = 11;
+		const double OFFSET = 1;
+
+		PointD p1 = new (
+			X: swap_rect.Left + RADIUS,
+			Y: swap_rect.Bottom - OFFSET);
+
+		g.MoveTo (p1.X, p1.Y);
+
+		g.CurveTo (
+			p1.X,
+			p1.Y - RADIUS - 2,
+			p1.X,
+			p1.Y - RADIUS + OFFSET,
+			swap_rect.Left + OFFSET,
+			swap_rect.Bottom - RADIUS);
+
+		g.MoveTo (p1.X - ARROW_SIZE, p1.Y - ARROW_SIZE);
+
+		g.LineTo (p1.X, p1.Y);
+		g.LineTo (p1.X + ARROW_SIZE, p1.Y - ARROW_SIZE);
+
+		PointD p2 = new (
+			X: swap_rect.Left + OFFSET,
+			Y: swap_rect.Bottom - RADIUS);
+
+		g.MoveTo (p2.X + ARROW_SIZE, p2.Y - ARROW_SIZE);
+
+		g.LineTo (p2.X, p2.Y);
+		g.LineTo (p2.X + ARROW_SIZE, p2.Y + ARROW_SIZE);
+
+		g.Stroke ();
+
+		g.Restore ();
+	}
+
+	private void HandleSizeAllocated (Gtk.DrawingArea.ResizeSignalArgs e)
+	{
+		int width = e.Width;
+
+		// Store the bounds allocated for our palette
+		int recent_cols = palette.MaxRecentlyUsedColor / PaletteWidget.PALETTE_ROWS;
+
+		recent_palette_rect = new RectangleD (50, 2, PaletteWidget.SWATCH_SIZE * recent_cols, PaletteWidget.SWATCH_SIZE * PaletteWidget.PALETTE_ROWS);
+		palette_rect = new RectangleD (
+			recent_palette_rect.Right + PaletteWidget.PALETTE_MARGIN,
+			2,
+			width - recent_palette_rect.Right - PaletteWidget.PALETTE_MARGIN,
+			PaletteWidget.SWATCH_SIZE * PaletteWidget.PALETTE_ROWS);
+	}
+
+	/// <summary>
+	/// Provide a custom tooltip based on the cursor location.
+	/// </summary>
+	private bool HandleQueryTooltip (object o, Gtk.Widget.QueryTooltipSignalArgs args)
+	{
+		string? text = null;
+		PointD point = new (args.X, args.Y);
+
+		static string BuildColorTooltip (Color color, string tooltip) => Translations.GetString ("Color") + $": #{color.ToHex ()}\n\n" + tooltip;
+
+		switch (GetElementAtPoint (point)) {
+			case WidgetElement.Palette:
+				int paletteIndex = PaletteWidget.GetSwatchAtLocation (palette, point, palette_rect);
+				if (paletteIndex >= 0) {
+					text = BuildColorTooltip (palette.CurrentPalette.Colors[paletteIndex],
+					// Translators: {0} is 'Ctrl', or a platform-specific key such as 'Command' on macOS.
+					Translations.GetString ("Left click to set primary color. Right click to set secondary color. Middle click or press {0} and left click to choose palette color.",
+						system.CtrlLabel ()));
+				}
+				break;
+			case WidgetElement.RecentColorsPalette:
+				int recentColorsIndex = PaletteWidget.GetSwatchAtLocation (palette, point, recent_palette_rect, true);
+				if (recentColorsIndex >= 0) {
+					text = BuildColorTooltip (palette.RecentlyUsedColors[recentColorsIndex],
+					Translations.GetString ("Left click to set primary color. Right click to set secondary color."));
+				}
+				break;
+			case WidgetElement.PrimaryColor:
+				text = BuildColorTooltip (palette.PrimaryColor,
+				Translations.GetString ("Click to select primary color."));
+				break;
+			case WidgetElement.SecondaryColor:
+				text = BuildColorTooltip (palette.SecondaryColor,
+				Translations.GetString ("Click to select secondary color."));
+				break;
+			case WidgetElement.SwapColors:
+				string label = Translations.GetString ("Click to switch between primary and secondary color.");
+				string shortcut_label = Translations.GetString ("Shortcut key");
+				text = $"{label} {shortcut_label}: {"X"}";
+				break;
+			case WidgetElement.ResetColors:
+				text = Translations.GetString ("Click to reset primary and secondary color.");
+				break;
 		}
 
-		private Rectangle GetSwatchBounds (int index, bool recentColorPalette = false)
-		{
-			// Normal swatches are layed out like this:
-			// 0 | 2 | 4 | 6
-			// 1 | 3 | 5 | 7
-			// Recent swatches are layed out like this (it's less visually jarring as they change):
-			// 0 | 1 | 2 | 3
-			// 4 | 5 | 6 | 7
+		args.Tooltip.SetText (text);
+		return text != null;
+	}
 
-			// First we need to figure out what row and column the color is
-			var recent_cols = PintaCore.Palette.MaxRecentlyUsedColor / PALETTE_ROWS;
-			var row = recentColorPalette ? index / recent_cols : index % PALETTE_ROWS;
-			var col = recentColorPalette ? index % recent_cols : index / PALETTE_ROWS;
+	private void Palette_ColorChanged (object? sender, EventArgs e)
+	{
+		// Color change events may be received while the widget is minimized,
+		// so we only call Invalidate() if the widget is shown.
+		if (GetRealized ())
+			QueueDraw ();
+	}
 
-			// Now we need to construct the bounds of that row/column
-			var palette_bounds = recentColorPalette ? recent_palette_rect : palette_rect;
-			var x = palette_bounds.X + (col * SWATCH_SIZE);
-			var y = palette_bounds.Y + (row * SWATCH_SIZE);
+	private async Task<PaletteColors?> RunColorPicker (bool primarySelected)
+	{
+		using ColorPickerDialog colorPicker = ColorPickerDialog.New (
+			chrome.MainWindow,
+			palette,
+			new PaletteColors (palette.PrimaryColor, palette.SecondaryColor),
+			primarySelected,
+			true,
+			Translations.GetString ("Choose Colors"));
 
-			return new Rectangle (x, y, SWATCH_SIZE, SWATCH_SIZE);
+		Gtk.ResponseType response = await colorPicker.RunAsync ();
+
+		if (response != Gtk.ResponseType.Ok)
+			return null;
+
+		return (PaletteColors) colorPicker.Colors;
+	}
+
+
+	private async Task<SingleColor?> GetUserChosenColor (
+		SingleColor colors,
+		string title)
+	{
+		using ColorPickerDialog dialog = ColorPickerDialog.New (
+			chrome.MainWindow,
+			palette,
+			colors,
+			primarySelected: true,
+			false,
+			title);
+
+		try {
+			Gtk.ResponseType response = await dialog.RunAsync ();
+
+			if (response != Gtk.ResponseType.Ok)
+				return null;
+
+			return (SingleColor) dialog.Colors;
+
+		} finally {
+			dialog.Destroy ();
 		}
+	}
 
-		private int GetSwatchAtLocation (PointD point, bool recentColorPalette = false)
-		{
-			var max = recentColorPalette ? PintaCore.Palette.RecentlyUsedColors.Count () : PintaCore.Palette.CurrentPalette.Count;
+	private WidgetElement GetElementAtPoint (PointD point)
+	{
+		if (palette_rect.ContainsPoint (point))
+			return WidgetElement.Palette;
 
-			// This could be more efficient, but is good enough for now
-			for (var i = 0; i < max; i++)
-				if (GetSwatchBounds (i, recentColorPalette).ContainsPoint (point))
-					return i;
+		if (recent_palette_rect.ContainsPoint (point))
+			return WidgetElement.RecentColorsPalette;
 
-			return -1;
-		}
+		if (primary_rect.ContainsPoint (point))
+			return WidgetElement.PrimaryColor;
 
-		/// <summary>
-		/// Provide a custom tooltip based on the cursor location.
-		/// </summary>
-		private void HandleQueryTooltip (object o, Gtk.QueryTooltipArgs args)
-		{
-			string? text = null;
-			var point = new PointD (args.X, args.Y);
+		if (secondary_rect.ContainsPoint (point))
+			return WidgetElement.SecondaryColor;
 
-			switch (GetElementAtPoint (point)) {
-				case WidgetElement.Palette:
-					if (GetSwatchAtLocation (point) >= 0)
-						text = Translations.GetString ("Left click to set primary color. Right click to set secondary color. Middle click to choose palette color.");
-					break;
-				case WidgetElement.RecentColorsPalette:
-					if (GetSwatchAtLocation (point, true) >= 0)
-						text = Translations.GetString ("Left click to set primary color. Right click to set secondary color.");
-					break;
-				case WidgetElement.PrimaryColor:
-					text = Translations.GetString ("Click to select primary color.");
-					break;
-				case WidgetElement.SecondaryColor:
-					text = Translations.GetString ("Click to select secondary color.");
-					break;
-				case WidgetElement.SwapColors:
-					var label = Translations.GetString ("Click to switch between primary and secondary color.");
-					var shortcut_label = Translations.GetString ("Shortcut key");
-					text = $"{label} {shortcut_label}: {"X"}";
-					break;
-				case WidgetElement.ResetColors:
-					text = Translations.GetString ("Click to reset primary and secondary color.");
-					break;
-			}
+		if (swap_rect.ContainsPoint (point))
+			return WidgetElement.SwapColors;
 
-			args.Tooltip.Text = text;
-			args.RetVal = (text != null);
-		}
+		if (reset_rect.ContainsPoint (point))
+			return WidgetElement.ResetColors;
 
-		private void Palette_ColorChanged (object? sender, EventArgs e)
-		{
-			// Color change events may be received while the widget is minimized,
-			// so we only call Invalidate() if the widget is shown.
-			if (IsRealized)
-				Window.Invalidate ();
-		}
+		return WidgetElement.Nothing;
+	}
 
-		private Color GetUserChosenColor (Color initialColor, string title)
-		{
-			using (var ccd = new Gtk.ColorChooserDialog (title, PintaCore.Chrome.MainWindow)) {
-				ccd.UseAlpha = true;
-				ccd.Rgba = initialColor.ToGdkRGBA ();
-
-				var response = (Gtk.ResponseType) ccd.Run ();
-
-				if (response == Gtk.ResponseType.Ok)
-					return ccd.Rgba.ToCairoColor ();
-
-				return initialColor;
-			}
-		}
-
-		private WidgetElement GetElementAtPoint (PointD point)
-		{
-			if (palette_rect.ContainsPoint (point))
-				return WidgetElement.Palette;
-			if (recent_palette_rect.ContainsPoint (point))
-				return WidgetElement.RecentColorsPalette;
-			if (primary_rect.ContainsPoint (point))
-				return WidgetElement.PrimaryColor;
-			if (secondary_rect.ContainsPoint (point))
-				return WidgetElement.SecondaryColor;
-			if (swap_rect.ContainsPoint (point))
-				return WidgetElement.SwapColors;
-			if (reset_rect.ContainsPoint (point))
-				return WidgetElement.ResetColors;
-
-			return WidgetElement.Nothing;
-		}
-
-		private enum WidgetElement
-		{
-			Nothing,
-			Palette,
-			RecentColorsPalette,
-			PrimaryColor,
-			SecondaryColor,
-			SwapColors,
-			ResetColors
-		}
+	private enum WidgetElement
+	{
+		Nothing,
+		Palette,
+		RecentColorsPalette,
+		PrimaryColor,
+		SecondaryColor,
+		SwapColors,
+		ResetColors,
 	}
 }

@@ -1,21 +1,21 @@
-// 
+//
 // SaveAllDocumentsAction.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -27,34 +27,43 @@
 using System;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class SaveAllDocumentsAction : IActionHandler
 {
-	class SaveAllDocumentsAction : IActionHandler
+	private readonly WindowActions window;
+	private readonly WorkspaceManager workspace;
+	internal SaveAllDocumentsAction (
+		WindowActions window,
+		WorkspaceManager workspace)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.Window.SaveAll.Activated += Activated;
-		}
+		this.window = window;
+		this.workspace = workspace;
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.Window.SaveAll.Activated -= Activated;
-		}
-		#endregion
+	void IActionHandler.Initialize ()
+	{
+		window.SaveAll.Activated += Activated;
+	}
 
-		private void Activated (object sender, EventArgs e)
-		{
-			foreach (Document doc in PintaCore.Workspace.OpenDocuments) {
-				if (!doc.IsDirty && doc.HasFile)
-					continue;
+	void IActionHandler.Uninitialize ()
+	{
+		window.SaveAll.Activated -= Activated;
+	}
 
-				PintaCore.Workspace.SetActiveDocument (doc);
+	private async void Activated (object sender, EventArgs e)
+	{
+		for (int i = 0; i < workspace.OpenDocuments.Count; ++i) {
+			Document doc = workspace.OpenDocuments[i];
 
-				// Loop through all of these until we get a cancel
-				if (!doc.Save (false))
-					break;
-			}
+			if (!doc.IsDirty && doc.HasFile)
+				continue;
+
+			workspace.SetActiveDocument (i);
+
+			// Loop through all of these until we get a cancel
+			if (!await doc.Save (false))
+				break;
 		}
 	}
 }

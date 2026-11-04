@@ -9,159 +9,138 @@
 
 using System;
 using Cairo;
-using Gdk;
 using Pinta.Core;
 
-namespace Pinta.Gui.Widgets
+namespace Pinta.Gui.Widgets;
+
+[GObject.Subclass<Gtk.DrawingArea>]
+public sealed partial class AnglePickerGraphic
 {
-	public class AnglePickerGraphic : Gtk.DrawingArea
+	private PointD drag_start;
+	private DegreesAngle angle_value;
+
+	public static new AnglePickerGraphic New ()
+		=> NewWithProperties ([]);
+
+	partial void Initialize ()
 	{
-		private bool tracking = false;
-		private Gdk.Point last_mouse_xy;
-		private double angle_value;
+		HeightRequest = WidthRequest = 50;
 
-		public AnglePickerGraphic ()
-		{
-			Events = ((EventMask) (16134));
+		SetDrawFunc ((area, context, width, height) => Draw (context));
 
-			ButtonPressEvent += HandleHandleButtonPressEvent;
-			ButtonReleaseEvent += HandleHandleButtonReleaseEvent;
-			MotionNotifyEvent += HandleHandleMotionNotifyEvent;
-		}
+		// Handle click + drag.
+		var gesture = Gtk.GestureDrag.New ();
+		gesture.SetButton (GtkExtensions.MOUSE_LEFT_BUTTON);
 
-		public int Value {
-			get => (int) angle_value;
-			set {
-				var v = value % 360;
-				if (angle_value != v) {
-					angle_value = v;
-					OnValueChanged ();
-					Window.Invalidate ();
-				}
-			}
-		}
+		gesture.OnDragBegin += (_, args) => {
+			drag_start = new PointD (args.StartX, args.StartY);
+			ProcessMouseEvent (drag_start, gesture.GetCurrentEventState ().IsShiftPressed ());
+			gesture.SetState (Gtk.EventSequenceState.Claimed);
+		};
+		gesture.OnDragUpdate += (_, args) => {
+			var drag_offset = new PointD (args.OffsetX, args.OffsetY);
+			ProcessMouseEvent (drag_start + drag_offset, gesture.GetCurrentEventState ().IsShiftPressed ());
+			gesture.SetState (Gtk.EventSequenceState.Claimed);
+		};
+		AddController (gesture);
 
-		public double ValueDouble {
-			get => angle_value;
-			set {
-				//double v = Math.IEEERemainder (value, 360.0);
-				if (angle_value != value) {
-					angle_value = value;
-					OnValueChanged ();
-
-					if (Window != null)
-						Window.Invalidate ();
-				}
-			}
-		}
-
-		private void HandleHandleMotionNotifyEvent (object o, Gtk.MotionNotifyEventArgs args)
-		{
-			ProcessMouseEvent (new Gdk.Point ((int) args.Event.X, (int) args.Event.Y), (args.Event.State & ModifierType.ShiftMask) == ModifierType.ShiftMask);
-		}
-
-		private void HandleHandleButtonReleaseEvent (object o, Gtk.ButtonReleaseEventArgs args)
-		{
-			tracking = false;
-		}
-
-		private void HandleHandleButtonPressEvent (object o, Gtk.ButtonPressEventArgs args)
-		{
-			tracking = true;
-
-			ProcessMouseEvent (new Gdk.Point ((int) args.Event.X, (int) args.Event.Y), args.Event.IsShiftPressed ());
-		}
-
-		private void ProcessMouseEvent (Gdk.Point pt, bool constrainAngle)
-		{
-			last_mouse_xy = pt;
-
-			if (tracking) {
-				var ourRect = Gdk.Rectangle.Inflate (Window.GetBounds (), -2, -2);
-				var diameter = Math.Min (ourRect.Width, ourRect.Height);
-				var center = new Gdk.Point (ourRect.X + (diameter / 2), ourRect.Y + (diameter / 2));
-
-				var dx = last_mouse_xy.X - center.X;
-				var dy = last_mouse_xy.Y - center.Y;
-				var theta = Math.Atan2 (-dy, dx);
-
-				var newAngle = (theta * 360) / (2 * Math.PI);
-
-				if (newAngle < 0)
-					newAngle += 360;
-
-				if (constrainAngle) {
-					const double constraintAngle = 15.0;
-
-					var multiple = newAngle / constraintAngle;
-					var top = Math.Floor (multiple);
-					var topDelta = Math.Abs (top - multiple);
-					var bottom = Math.Ceiling (multiple);
-					var bottomDelta = Math.Abs (bottom - multiple);
-
-					double bestMultiple;
-
-					if (bottomDelta < topDelta)
-						bestMultiple = bottom;
-					else
-						bestMultiple = top;
-
-					newAngle = bestMultiple * constraintAngle;
-				}
-
-				ValueDouble = newAngle;
-
-				Window.Invalidate ();
-			}
-		}
-
-		protected override bool OnDrawn (Context g)
-		{
-			base.OnDrawn (g);
-
-			var ourRect = Gdk.Rectangle.Inflate (Window.GetBounds (), -1, -1).ToCairoRectangle ();
-
-			var diameter = Math.Min (ourRect.Width, ourRect.Height);
-			var radius = (diameter / 2.0);
-
-			var center = new PointD (
-			    (float) (ourRect.X + radius),
-			    (float) (ourRect.Y + radius));
-
-			var theta = (angle_value * 2.0 * Math.PI) / 360.0;
-
-			var ellipseRect = new Cairo.Rectangle (ourRect.Location (), diameter, diameter);
-			var ellipseOutlineRect = ellipseRect;
-
-			g.DrawEllipse (ellipseOutlineRect, new Cairo.Color (.1, .1, .1), 1);
-
-			var endPointRadius = radius - 2;
-
-			var endPoint = new PointD (
-			    (float) (center.X + (endPointRadius * Math.Cos (theta))),
-			    (float) (center.Y - (endPointRadius * Math.Sin (theta))));
-
-			var gripSize = 2.5f;
-			var gripEllipseRect = new Cairo.Rectangle (center.X - gripSize, center.Y - gripSize, gripSize * 2, gripSize * 2);
-
-			g.FillEllipse (gripEllipseRect, new Cairo.Color (.1, .1, .1));
-			g.DrawLine (center, endPoint, new Cairo.Color (.1, .1, .1), 1);
-
-			return true;
-		}
-
-		protected override void OnGetPreferredHeight (out int minimum_height, out int natural_height)
-		{
-			minimum_height = natural_height = 50;
-		}
-
-		protected override void OnGetPreferredWidth (out int minimum_width, out int natural_width)
-		{
-			minimum_width = natural_width = 50;
-		}
-
-		public event EventHandler? ValueChanged;
-
-		protected virtual void OnValueChanged () => ValueChanged?.Invoke (this, EventArgs.Empty);
+		ValueChanged += (_, _) => QueueDraw ();
 	}
+
+	public DegreesAngle Value {
+		get => angle_value;
+		set {
+			if (angle_value == value) return;
+			angle_value = value;
+			OnValueChanged ();
+		}
+	}
+
+	private RectangleD GetDrawBounds ()
+	{
+		RectangleD rect = new (0, 0, GetAllocatedWidth (), GetAllocatedHeight ());
+		return rect.Inflated (-1, -1);
+	}
+
+	private void ProcessMouseEvent (PointD pt, bool constrainAngle)
+	{
+		Value = CalculateNewAngle (pt, constrainAngle);
+	}
+
+	private DegreesAngle CalculateNewAngle (PointD pt, bool constrainAngle)
+	{
+		RectangleD rect = GetDrawBounds ();
+		double diameter = Math.Min (rect.Width, rect.Height);
+		PointD center = new (rect.X + diameter * 0.5, rect.Y + diameter * 0.5);
+		PointD delta = pt - center;
+		RadiansAngle theta = new (Math.Atan2 (-delta.Y, delta.X));
+		DegreesAngle newAngle = theta.ToDegrees ();
+
+		if (!constrainAngle)
+			return newAngle;
+		else
+			return GetConstrainedAngle (newAngle);
+
+		static DegreesAngle GetConstrainedAngle (DegreesAngle baseAngle)
+		{
+			const double constraint_angle = 15.0;
+			double multiple = Math.Round (baseAngle.Degrees / constraint_angle);
+			return new (multiple * constraint_angle);
+		}
+	}
+
+	private readonly record struct AngleGraphicSettings (
+		RectangleD ellipseOutlineRect,
+		Color color,
+		RectangleD gripEllipseRect,
+		PointD center,
+		PointD endPoint);
+
+	private AngleGraphicSettings CreateSettings ()
+	{
+		GetStyleContext ().GetColor (out Gdk.RGBA color);
+
+		RectangleD rect = GetDrawBounds ();
+
+		double diameter = Math.Min (rect.Width, rect.Height);
+		double radius = diameter / 2.0;
+
+		PointD center = new (rect.X + radius, rect.Y + radius);
+
+		RadiansAngle theta = angle_value.ToRadians ();
+
+		RectangleD ellipseRect = new (0, 0, diameter, diameter);
+
+		double endPointRadius = radius - 2;
+
+		PointD endPoint = new (
+			X: (float) (center.X + (endPointRadius * Math.Cos (theta.Radians))),
+			Y: (float) (center.Y - (endPointRadius * Math.Sin (theta.Radians)))
+		);
+
+		const float gripSize = 2.5f;
+
+		return new (
+			ellipseOutlineRect: ellipseRect,
+			color: color.ToCairoColor (),
+			gripEllipseRect: new RectangleD (center.X - gripSize, center.Y - gripSize, gripSize * 2, gripSize * 2),
+			center: center,
+			endPoint: endPoint
+		);
+	}
+
+	private void Draw (Context g)
+	{
+		AngleGraphicSettings settings = CreateSettings ();
+		g.DrawEllipse (settings.ellipseOutlineRect, settings.color, 1);
+		g.FillEllipse (settings.gripEllipseRect, settings.color);
+		g.DrawLine (settings.center, settings.endPoint, settings.color, 1);
+
+		g.Dispose ();
+	}
+
+	public event EventHandler? ValueChanged;
+
+	private void OnValueChanged ()
+		=> ValueChanged?.Invoke (this, EventArgs.Empty);
 }

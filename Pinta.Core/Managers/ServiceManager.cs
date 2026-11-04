@@ -26,44 +26,48 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public static class ServiceProviderExtensions
 {
-	public interface IServiceManager
+	public static T GetService<T> (this IServiceProvider services) where T : class
 	{
-		T AddService<T> (T implementation) where T : class;
-		T GetService<T> () where T : class;
-		T? GetOptionalService<T> () where T : class;
+		object? implementation = services.GetService (typeof (T));
+		if (implementation is not null)
+			return (T) implementation;
+		throw new ApplicationException ($"Could not resolve service type {typeof (T)}");
 	}
 
-	public class ServiceManager : IServiceManager
+	public static T? GetOptionalService<T> (this IServiceProvider services) where T : class
 	{
-		private Dictionary<Type, object> services = new Dictionary<Type, object> ();
+		object? implementation = services.GetService (typeof (T));
+		if (implementation is not null)
+			return (T) implementation;
+		return null;
+	}
+}
 
-		public T AddService<T> (T implementation) where T : class
-		{
-			services.Add (typeof (T), implementation);
+public interface IServiceManager : IServiceProvider
+{
+	T AddService<T> (T implementation) where T : class;
+}
 
+public sealed class ServiceManager : IServiceManager
+{
+	private readonly Dictionary<Type, object> services = [];
+
+	public T AddService<T> (T implementation) where T : class
+	{
+		services.Add (typeof (T), implementation);
+		return implementation;
+	}
+
+	public object? GetService (Type serviceType)
+	{
+		if (services.TryGetValue (serviceType, out var implementation))
 			return implementation;
-		}
-
-		public T GetService<T> () where T : class
-		{
-			if (services.TryGetValue (typeof (T), out var implementation))
-				return (T) implementation;
-
-			throw new ApplicationException ($"Could not resolve service type {typeof (T)}");
-		}
-
-		public T? GetOptionalService<T> () where T : class
-		{
-			if (services.TryGetValue (typeof (T), out var implementation))
-				return (T) implementation;
-
+		else
 			return null;
-		}
 	}
 }

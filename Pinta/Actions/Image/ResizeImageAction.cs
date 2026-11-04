@@ -1,21 +1,21 @@
-// 
+//
 // ResizeImageAction.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,35 +25,56 @@
 // THE SOFTWARE.
 
 using System;
-using Gtk;
+using System.Threading.Tasks;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class ResizeImageAction : IActionHandler
 {
-	class ResizeImageAction : IActionHandler
+	private readonly ImageActions image;
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	private readonly ISettingsService settings;
+	internal ResizeImageAction (
+		ImageActions image,
+		IChromeService chrome,
+		IWorkspaceService workspace,
+		ISettingsService settings)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.Image.Resize.Activated += Activated;
-		}
+		this.image = image;
+		this.chrome = chrome;
+		this.workspace = workspace;
+		this.settings = settings;
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.Image.Resize.Activated -= Activated;
-		}
-		#endregion
+	void IActionHandler.Initialize ()
+	{
+		image.Resize.Activated += Activated;
+	}
 
-		private void Activated (object sender, EventArgs e)
-		{
-			using var dialog = new ResizeImageDialog ();
+	void IActionHandler.Uninitialize ()
+	{
+		image.Resize.Activated -= Activated;
+	}
 
-			dialog.WindowPosition = Gtk.WindowPosition.CenterOnParent;
+	private async void Activated (object sender, EventArgs e)
+	{
+		ResizeImageOptions? response = await PromptResize ();
+		if (!response.HasValue) return;
+		ResizeImageOptions resizing = response.Value;
+		workspace.ResizeImage (resizing.NewSize, resizing.ResamplingMode);
+	}
 
-			int response = dialog.Run ();
-
-			if (response == (int) Gtk.ResponseType.Ok)
-				dialog.SaveChanges ();
+	private async Task<ResizeImageOptions?> PromptResize ()
+	{
+		using ResizeImageDialog dialog = ResizeImageDialog.New (chrome, workspace, settings);
+		try {
+			Gtk.ResponseType response = await dialog.RunAsync ();
+			if (response != Gtk.ResponseType.Ok) return null;
+			return dialog.GetResizeImageOptions ();
+		} finally {
+			dialog.Destroy ();
 		}
 	}
 }

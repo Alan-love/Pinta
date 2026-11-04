@@ -8,86 +8,72 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class ReliefEffect : BaseEffect
 {
-	public class ReliefEffect : ColorDifferenceEffect
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public ReliefEffect (IServiceProvider services)
 	{
-		public ReliefEffect ()
-		{
-			EffectData = new ReliefData ();
-		}
-
-		public ReliefData Data {
-			get { return (ReliefData) EffectData!; } // NRT - Set in constructor
-		}
-
-		public override bool IsConfigurable {
-			get { return true; }
-		}
-
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Stylize"); }
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		public override string Icon {
-			get { return "Menu.Effects.Stylize.Relief.png"; }
-		}
-
-		public override string Name {
-			get { return Translations.GetString ("Relief"); }
-		}
-
-		#region Algorithm Code Ported From PDN
-		public override void Render (Cairo.ImageSurface src, Cairo.ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			base.RenderColorDifferenceEffect (Weights, src, dst, rois);
-		}
-
-		private double[][] Weights {
-			get {
-				// adjust and convert angle to radians
-				double r = (double) Data.Angle * 2.0 * Math.PI / 360.0;
-
-				// angle delta for each weight
-				double dr = Math.PI / 4.0;
-
-				// for r = 0 this builds an Relief filter pointing straight left
-				double[][] weights = new double[3][];
-
-				for (uint idx = 0; idx < 3; ++idx) {
-					weights[idx] = new double[3];
-				}
-
-				weights[0][0] = Math.Cos (r + dr);
-				weights[0][1] = Math.Cos (r + 2.0 * dr);
-				weights[0][2] = Math.Cos (r + 3.0 * dr);
-
-				weights[1][0] = Math.Cos (r);
-				weights[1][1] = 1;
-				weights[1][2] = Math.Cos (r + 4.0 * dr);
-
-				weights[2][0] = Math.Cos (r - dr);
-				weights[2][1] = Math.Cos (r - 2.0 * dr);
-				weights[2][2] = Math.Cos (r - 3.0 * dr);
-
-				return weights;
-			}
-		}
-		#endregion
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new ReliefData ();
 	}
 
+	public ReliefData Data => (ReliefData) EffectData!;
 
-	public class ReliefData : EffectData
+	public override bool IsConfigurable => true;
+
+	public sealed override bool IsTileable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Stylize");
+
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
+
+	public override string Icon => Resources.Icons.EffectsStylizeRelief;
+
+	public override string Name => Translations.GetString ("Relief");
+
+	// Algorithm Code Ported From PDN
+	public override void Render (Cairo.ImageSurface source, Cairo.ImageSurface destination, ReadOnlySpan<RectangleI> rois)
 	{
-		[Caption ("Angle")]
-		public double Angle = 45;
+		var weights = ComputeWeights (Data.Angle.ToRadians ());
+		ColorDifference.RenderColorDifferenceEffect (weights, source, destination, rois);
 	}
+
+	private static double[,] ComputeWeights (RadiansAngle angle)
+	{
+		// angle delta for each weight
+		const double ANGLE_DELTA = Math.PI / 4.0;
+
+		double[,] weights = new double[3, 3];
+
+		// for angle = 0 this builds an relief filter pointing straight left
+
+		weights[0, 0] = Math.Cos (angle.Radians + ANGLE_DELTA);
+		weights[0, 1] = Math.Cos (angle.Radians + 2.0 * ANGLE_DELTA);
+		weights[0, 2] = Math.Cos (angle.Radians + 3.0 * ANGLE_DELTA);
+
+		weights[1, 0] = Math.Cos (angle.Radians);
+		weights[1, 1] = 1;
+		weights[1, 2] = Math.Cos (angle.Radians + 4.0 * ANGLE_DELTA);
+
+		weights[2, 0] = Math.Cos (angle.Radians - ANGLE_DELTA);
+		weights[2, 1] = Math.Cos (angle.Radians - 2.0 * ANGLE_DELTA);
+		weights[2, 2] = Math.Cos (angle.Radians - 3.0 * ANGLE_DELTA);
+
+		return weights;
+	}
+}
+
+
+public sealed class ReliefData : EffectData
+{
+	[Caption ("Angle")]
+	public DegreesAngle Angle { get; set; } = new (45);
 }

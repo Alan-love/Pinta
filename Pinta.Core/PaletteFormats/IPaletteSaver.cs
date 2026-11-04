@@ -24,16 +24,13 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
 using System.Collections.Generic;
 using Cairo;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+[Mono.Addins.TypeExtensionPoint]
+public interface IPaletteSaver
 {
-	// TODO-GTK3 (addins)
-	// [TypeExtensionPoint]
-	public interface IPaletteSaver
-	{
-		void Save (List<Color> colors, string fileName);
-	}
+	void Save (IReadOnlyList<Color> colors, Gio.File file);
 }

@@ -24,29 +24,35 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class ToolBarToggledAction : IActionHandler
 {
-	class ToolBarToggledAction : IActionHandler
+	private readonly ViewActions view;
+	private readonly ChromeManager chrome;
+	internal ToolBarToggledAction (
+		ViewActions view,
+		ChromeManager chrome)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.View.ToolBar.Toggled += Activated;
-		}
+		this.view = view;
+		this.chrome = chrome;
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.View.ToolBar.Toggled -= Activated;
-		}
-		#endregion
+	void IActionHandler.Initialize ()
+	{
+		view.ToolBar.Toggled += Activated;
+	}
 
-		private void Activated (bool value)
-		{
-			PintaCore.Chrome.MainToolBar.Visible = value;
-		}
+	void IActionHandler.Uninitialize ()
+	{
+		view.ToolBar.Toggled -= Activated;
+	}
+
+	private void Activated (bool value, bool interactive)
+	{
+		if (chrome.MainToolBar is not null)
+			chrome.MainToolBar.Visible = value;
 	}
 }

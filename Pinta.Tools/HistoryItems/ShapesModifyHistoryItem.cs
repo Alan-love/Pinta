@@ -24,72 +24,70 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using Cairo;
+using System.Collections.ObjectModel;
 using Pinta.Core;
 
-namespace Pinta.Tools
+namespace Pinta.Tools;
+
+public sealed class ShapesModifyHistoryItem : BaseHistoryItem
 {
-	public class ShapesModifyHistoryItem : BaseHistoryItem
+	private readonly BaseEditEngine ee;
+
+	private Collection<ShapeEngine> s_engines;
+
+	private int selected_point_index, selected_shape_index;
+
+	/// <summary>
+	/// A history item for when shapes are modified.
+	/// </summary>
+	/// <param name="passedEE">The EditEngine being used.</param>
+	/// <param name="icon">The history item's icon.</param>
+	/// <param name="text">The history item's title.</param>
+	public ShapesModifyHistoryItem (BaseEditEngine passedEE, string icon, string text) : base (icon, text)
 	{
-		private BaseEditEngine ee;
+		ee = passedEE;
 
-		private ShapeEngineCollection sEngines;
+		s_engines = new Collection<ShapeEngine> (BaseEditEngine.SEngines.PartialClone ());
+		selected_point_index = ee.SelectedPointIndex;
+		selected_shape_index = ee.SelectedShapeIndex;
+	}
 
-		private int selectedPointIndex, selectedShapeIndex;
+	public override void Undo ()
+	{
+		Swap ();
+	}
 
-		/// <summary>
-		/// A history item for when shapes are modified.
-		/// </summary>
-		/// <param name="passedEE">The EditEngine being used.</param>
-		/// <param name="icon">The history item's icon.</param>
-		/// <param name="text">The history item's title.</param>
-		public ShapesModifyHistoryItem (BaseEditEngine passedEE, string icon, string text) : base (icon, text)
-		{
-			ee = passedEE;
+	public override void Redo ()
+	{
+		Swap ();
+	}
 
-			sEngines = BaseEditEngine.SEngines.PartialClone ();
-			selectedPointIndex = ee.SelectedPointIndex;
-			selectedShapeIndex = ee.SelectedShapeIndex;
-		}
+	private void Swap ()
+	{
+		Swap (ref s_engines, ref BaseEditEngine.SEngines);
 
-		public override void Undo ()
-		{
-			Swap ();
-		}
-
-		public override void Redo ()
-		{
-			Swap ();
-		}
-
-		private void Swap ()
-		{
-			Swap (ref sEngines, ref BaseEditEngine.SEngines);
-
-			//Ensure that all of the shapes that should no longer be drawn have their ReEditableLayer removed from the drawing loop.
-			foreach (ShapeEngine se in sEngines) {
-				//Determine if it is currently in the drawing loop and should no longer be. Note: a DrawingLayer could be both removed and then
-				//later added in the same swap operation, but this is faster than looping through each ShapeEngine in BaseEditEngine.SEngines.
-				if (se.DrawingLayer.InTheLoop && !BaseEditEngine.SEngines.Contains (se)) {
-					se.DrawingLayer.TryRemoveLayer ();
-				}
+		//Ensure that all of the shapes that should no longer be drawn have their ReEditableLayer removed from the drawing loop.
+		foreach (ShapeEngine se in s_engines) {
+			//Determine if it is currently in the drawing loop and should no longer be. Note: a DrawingLayer could be both removed and then
+			//later added in the same swap operation, but this is faster than looping through each ShapeEngine in BaseEditEngine.SEngines.
+			if (se.DrawingLayer.InTheLoop && !BaseEditEngine.SEngines.Contains (se)) {
+				se.DrawingLayer.TryRemoveLayer ();
 			}
-
-
-			//Ensure that all of the shapes that should now be drawn have their ReEditableLayer in the drawing loop.
-			foreach (ShapeEngine se in BaseEditEngine.SEngines) {
-				//Determine if it is currently out of the drawing loop; if not, it should be.
-				if (!se.DrawingLayer.InTheLoop) {
-					se.DrawingLayer.TryAddLayer ();
-				}
-			}
-
-			Swap (ref selectedPointIndex, ref ee.SelectedPointIndex);
-			Swap (ref selectedShapeIndex, ref ee.SelectedShapeIndex);
-
-			//Determine if the currently active tool matches the shape's corresponding tool, and if not, switch to it.
-			BaseEditEngine.ActivateCorrespondingTool (selectedShapeIndex, true);
 		}
+
+
+		//Ensure that all of the shapes that should now be drawn have their ReEditableLayer in the drawing loop.
+		foreach (ShapeEngine se in BaseEditEngine.SEngines) {
+			//Determine if it is currently out of the drawing loop; if not, it should be.
+			if (!se.DrawingLayer.InTheLoop) {
+				se.DrawingLayer.TryAddLayer ();
+			}
+		}
+
+		Swap (ref selected_point_index, ref ee.SelectedPointIndex);
+		Swap (ref selected_shape_index, ref ee.SelectedShapeIndex);
+
+		//Determine if the currently active tool matches the shape's corresponding tool, and if not, switch to it.
+		BaseEditEngine.ActivateCorrespondingTool (selected_shape_index, true);
 	}
 }

@@ -1,7 +1,8 @@
 SUBDIRS = xdg
 DIST_SUBDIRS = xdg
 
-BINDIR = $(srcdir)/bin
+BUILDDIR = $(srcdir)/build
+BINDIR = $(BUILDDIR)/bin
 
 PINTA_BUILD_OPTS = --configuration Release -p:BuildTranslations=true
 
@@ -26,23 +27,32 @@ pkgconfig_DATA = $(PINTA_ASSEMBLY_PC)
 
 #end
 
-# target: all - Default target: build
-all: build
+# target: all - Default target: publish
+all: publish
 
 # target: run - Launch the uninstalled copy
 run: build
-	$(DOTNET) bin/Pinta.dll
+	$(DOTNET_CMD) build/bin/Pinta.dll
 
 # target: help - Display callable targets.
 help:
 	egrep "^# target:" Makefile | sed 's/^# target:/make/'
 
+build/bin/Pinta.dll: Pinta.sln
+	cd $(srcdir) && $(DOTNET_CMD) build Pinta.sln $(PINTA_BUILD_OPTS)
+
 # target: build - Build Pinta.
-build: Pinta.sln
-	cd $(srcdir) && $(DOTNET) build Pinta.sln $(PINTA_BUILD_OPTS)
+build: build/bin/Pinta.dll
+
+# Note we only publish the Pinta project, not the whole solution, to avoid races publishing to the same folder (#1241)
+publish/Pinta.dll: Pinta.sln
+	cd $(srcdir) && $(DOTNET_CMD) publish Pinta/Pinta.csproj $(PINTA_BUILD_OPTS) --self-contained false -p:PublishDir=$(abs_srcdir)/publish
+
+# target: publish - Build Pinta for deployment.
+publish: publish/Pinta.dll
 
 test: build
-	$(DOTNET) test Pinta.sln $(PINTA_BUILD_OPTS)
+	$(DOTNET_CMD) test Pinta.sln $(PINTA_BUILD_OPTS)
 
 # target: list - List source files.
 list:
@@ -54,18 +64,21 @@ list:
 	fi
 
 #target: updatepotfiles - update the POTFILES.in file
+# Note that intltool needs the [type:] prefix to correctly handle .ui files
 updatepotfiles:
-	echo xdg/pinta.desktop.in > po/POTFILES.in
-	echo xdg/pinta.appdata.xml.in >> po/POTFILES.in
-	find -s \
+	echo xdg/com.github.PintaProject.Pinta.desktop.in > po/POTFILES.in
+	echo xdg/com.github.PintaProject.Pinta.metainfo.xml.in >> po/POTFILES.in
+	find . -name \*.ui | sort | sed 's/^/[type: gettext\/glade]/' >> po/POTFILES.in
+	find \
 		Pinta \
 		Pinta.Core \
 		Pinta.Docking \
 		Pinta.Effects \
+		Pinta.Gui.Addins \
 		Pinta.Gui.Widgets \
 		Pinta.Resources \
 		Pinta.Tools \
-		-name \*.cs -not -path '*/obj/*' >> po/POTFILES.in
+		-name \*.cs -not -path '*/obj/*' | sort >> po/POTFILES.in
 
 #target: updatepot - update the messages.pot file
 updatepot:
@@ -79,32 +92,31 @@ clean-local: cleanobj cleanbin
 maintainer-clean-local:
 	rm -rf autom4te.cache
 
-# target: cleanbin - Removes built files. 
-cleanbin: 
-	rm -rvf $(BINDIR)/*
+# target: cleanbin - Removes built files.
+cleanbin:
+	rm -rvf $(BUILDDIR)/*
 
-# target: cleanobj - Removes temporary build files. 
+# target: cleanobj - Removes temporary build files.
 cleanobj:
 	find $(srcdir)/ -type d -name obj | xargs rm -rvf
 
 # target: install - Installs Pinta.
-install-exec-local: build
-	$(DOTNET) publish Pinta.sln $(PINTA_BUILD_OPTS) --self-contained false -o $(srcdir)/publish
-	$(DOTNET) msbuild installer/linux/install.proj -target:Install $(PINTA_INSTALL_OPTS)
+install-exec-local: publish
+	$(DOTNET_CMD) msbuild installer/linux/install.proj -target:Install $(PINTA_INSTALL_OPTS)
 	$(INSTALL_SCRIPT) installer/linux/pinta $(DESTDIR)$(bindir)/$(PACKAGE)
 
 # target: uninstall - Uninstalls Pinta.
 uninstall-hook:
-	$(DOTNET) msbuild installer/linux/install.proj -target:Uninstall $(PINTA_INSTALL_OPTS)
+	$(DOTNET_CMD) msbuild installer/linux/install.proj -target:Uninstall $(PINTA_INSTALL_OPTS)
 
 # target: releasezip - Make a self-contained release zip file.
 releasezip:
-	$(DOTNET) publish Pinta.sln $(PINTA_BUILD_OPTS) -r linux-x64 --self-contained true -o $(srcdir)/release
-	cd $(srcdir)/release && zip -r ../$(RELEASE_FILE).zip * -x "*.pdb"
+	$(DOTNET_CMD) publish Pinta/Pinta.csproj $(PINTA_BUILD_OPTS) -r linux-x64 --self-contained true -p:PublishDir=$(abs_srcdir)/release
+	cd $(abs_srcdir)/release && zip -r ../$(RELEASE_FILE).zip * -x "*.pdb"
 
-EXTRA_DIST = Pinta Pinta.Core Pinta.Docking Pinta.Effects Pinta.Gui.Widgets Pinta.Resources Pinta.Tools po xdg tests license-mit.txt \
-           license-pdn.txt Pinta.sln Pinta.Install.proj pinta.pc.in readme.md intltool-extract.in \
-           intltool-merge.in intltool-update.in
+EXTRA_DIST = Pinta Pinta.Core Pinta.Docking Pinta.Effects Pinta.Gui.Addins Pinta.Gui.Widgets Pinta.Resources Pinta.Tools po xdg tests license-mit.txt \
+           license-pdn.txt Pinta.sln pinta.pc.in readme.md intltool-extract.in \
+           intltool-merge.in intltool-update.in installer/addins installer/linux/install.proj properties Directory.Build.props Directory.Packages.props
 
 CLEANFILES = intltool-extract \
 	     intltool-update \

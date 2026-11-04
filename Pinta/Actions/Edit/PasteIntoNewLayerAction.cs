@@ -25,39 +25,70 @@
 // THE SOFTWARE.
 
 using System;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class PasteIntoNewLayerAction : IActionHandler
 {
-	class PasteIntoNewLayerAction : IActionHandler
+	private readonly ActionManager actions;
+	private readonly ChromeManager chrome;
+	private readonly WorkspaceManager workspace;
+	private readonly ToolManager tools;
+	internal PasteIntoNewLayerAction (
+		ActionManager actions,
+		ChromeManager chrome,
+		WorkspaceManager workspace,
+		ToolManager tools)
 	{
-		public void Initialize () => PintaCore.Actions.Edit.PasteIntoNewLayer.Activated += Activated;
+		this.actions = actions;
+		this.chrome = chrome;
+		this.workspace = workspace;
+		this.tools = tools;
+	}
 
-		public void Uninitialize () => PintaCore.Actions.Edit.PasteIntoNewLayer.Activated -= Activated;
+	void IActionHandler.Initialize ()
+	{
+		actions.Edit.PasteIntoNewLayer.Activated += Activated;
+	}
 
-		private void Activated (object sender, EventArgs e)
-		{
-			// If no documents are open, activate the
-			// PasteIntoNewImage action and abort this Paste action.
-			if (!PintaCore.Workspace.HasOpenDocuments) {
-				PintaCore.Actions.Edit.PasteIntoNewImage.Activate ();
-				return;
-			}
+	void IActionHandler.Uninitialize ()
+	{
+		actions.Edit.PasteIntoNewLayer.Activated -= Activated;
+	}
 
-			var doc = PintaCore.Workspace.ActiveDocument;
-
-			// Get the scroll position in canvas co-ordinates
-			var view = (Viewport) doc.Workspace.Canvas.Parent;
-
-			var canvasPos = doc.Workspace.WindowPointToCanvas (
-				view.Hadjustment.Value,
-				view.Vadjustment.Value);
-
-			// Paste into the active document.
-			// The 'true' argument indicates that paste should be
-			// performed into a new layer.
-			PasteAction.Paste (doc, true, (int) canvasPos.X, (int) canvasPos.Y);
+	private void Activated (object sender, EventArgs e)
+	{
+		// If no documents are open, activate the
+		// PasteIntoNewImage action and abort this Paste action.
+		if (!workspace.HasOpenDocuments) {
+			actions.Edit.PasteIntoNewImage.Activate ();
+			return;
 		}
+
+		var doc = workspace.ActiveDocument;
+
+		// Get the scroll position in canvas coordinates
+		var view = (Gtk.Viewport) doc.Workspace.Canvas.Parent!;
+
+		PointD viewPoint = new (
+			X: view.Hadjustment!.Value,
+			Y: view.Vadjustment!.Value
+		);
+
+		PointD canvasPos = doc.Workspace.ViewPointToCanvas (viewPoint);
+
+		// Paste into the active document.
+		// The 'true' argument indicates that paste should be
+		// performed into a new layer.
+		PasteAction.Paste (
+			actions: actions,
+			chrome: chrome,
+			workspace: workspace,
+			tools: tools,
+			doc: doc,
+			toNewLayer: true,
+			pastePosition: canvasPos.ToInt ()
+		);
 	}
 }

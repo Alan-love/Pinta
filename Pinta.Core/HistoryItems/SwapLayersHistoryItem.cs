@@ -1,21 +1,21 @@
-// 
+//
 // SwapLayersHistoryItem.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -26,50 +26,51 @@
 
 using System;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+// These are actions that can be undone by simply repeating
+// the action: invert colors, rotate 180 degrees, etc
+public sealed class SwapLayersHistoryItem : BaseHistoryItem
 {
-	// These are actions that can be undone by simply repeating
-	// the action: invert colors, rotate 180 degrees, etc
-	public class SwapLayersHistoryItem : BaseHistoryItem
+	private readonly int layer_index_1;
+	private readonly int layer_index_2;
+
+	public SwapLayersHistoryItem (string icon, string text, int layer1, int layer2) : base (icon, text)
 	{
-		private int layer_index_1;
-		private int layer_index_2;
+		layer_index_1 = layer1;
+		layer_index_2 = layer2;
+	}
 
-		public SwapLayersHistoryItem (string icon, string text, int layer1, int layer2) : base (icon, text)
-		{
-			layer_index_1 = layer1;
-			layer_index_2 = layer2;
-		}
+	public override void Undo ()
+	{
+		Swap ();
+	}
 
-		public override void Undo ()
-		{
-			Swap ();
-		}
+	public override void Redo ()
+	{
+		Swap ();
+	}
 
-		public override void Redo ()
-		{
-			Swap ();
-		}
+	private void Swap ()
+	{
+		var doc = PintaCore.Workspace.ActiveDocument;
 
-		private void Swap ()
-		{
-			var doc = PintaCore.Workspace.ActiveDocument;
+		int selected = doc.Layers.CurrentUserLayerIndex;
 
-			int selected = doc.Layers.CurrentUserLayerIndex;
+		int l1 = Math.Min (layer_index_1, layer_index_2);
+		int l2 = Math.Max (layer_index_1, layer_index_2);
 
-			int l1 = Math.Min (layer_index_1, layer_index_2);
-			int l2 = Math.Max (layer_index_1, layer_index_2);
+		UserLayer layer1 = doc.Layers[l1];
+		UserLayer layer2 = doc.Layers[l2];
 
-			UserLayer layer1 = doc.Layers[l1];
-			UserLayer layer2 = doc.Layers[l2];
+		// Note we shift one layer at a time to ensure the document doesn't temporarily
+		// end up in an invalid state with no layers.
+		doc.Layers.DeleteLayer (l1);
+		doc.Layers.Insert (layer1, l2 - 1);
 
-			doc.Layers.DeleteLayer (l1, false);
-			doc.Layers.DeleteLayer (l2 - 1, false);
+		doc.Layers.DeleteLayer (l2);
+		doc.Layers.Insert (layer2, l1);
 
-			doc.Layers.Insert (layer2, l1);
-			doc.Layers.Insert (layer1, l2);
-
-			doc.Layers.SetCurrentUserLayer (selected);
-		}
+		doc.Layers.SetCurrentUserLayer (selected);
 	}
 }

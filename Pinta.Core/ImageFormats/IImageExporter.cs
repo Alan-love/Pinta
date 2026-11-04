@@ -24,26 +24,22 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
+namespace Pinta.Core;
 
-namespace Pinta.Core
+[Mono.Addins.TypeExtensionPoint]
+public interface IImageExporter
 {
-	// TODO-GTK3 (addins)
-	// [TypeExtensionPoint]
-	public interface IImageExporter
-	{
-		/// <summary>
-		/// Exports a document to a file.
-		/// </summary>
-		/// <param name='document'>
-		/// The document to be saved.
-		/// </param>
-		/// <param name='fileName'>
-		/// File name to save to.
-		/// </param>
-		/// <param name='parent'>
-		/// Window to be used as a parent for any dialogs that are shown.
-		/// </param>
-		void Export (Document document, string fileName, Gtk.Window parent);
-	}
+	/// <summary>
+	/// Exports a document to a file.
+	/// </summary>
+	/// <param name='document'>
+	/// The document to be saved.
+	/// </param>
+	/// <param name='file'>
+	/// File identifier to save to.
+	/// </param>
+	/// <param name='parent'>
+	/// Window to be used as a parent for any dialogs that are shown.
+	/// </param>
+	void Export (Document document, Gio.File file, Gtk.Window parent);
 }

@@ -8,93 +8,86 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class ReduceNoiseEffect : BaseEffect
 {
-	public class ReduceNoiseEffect : LocalHistogramEffect
+	public override string Icon
+		=> Resources.Icons.EffectsNoiseReduceNoise;
+
+	public sealed override bool IsTileable
+		=> true;
+
+	public override string Name
+		=> Translations.GetString ("Reduce Noise");
+
+	public override bool IsConfigurable
+		=> true;
+
+	public override string EffectMenuCategory
+		=> Translations.GetString ("Noise");
+
+	public ReduceNoiseData Data
+		=> (ReduceNoiseData) EffectData!; // NRT - Set in constructor
+
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public ReduceNoiseEffect (IServiceProvider services)
 	{
-		private int radius;
-		private double strength;
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new ReduceNoiseData ();
+	}
 
-		public override string Icon {
-			get { return "Menu.Effects.Noise.ReduceNoise.png"; }
-		}
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
+	{
+		int radius = Data.Radius;
+		double strength = -0.2 * Data.Strength;
 
-		public override string Name {
-			get { return Translations.GetString ("Reduce Noise"); }
-		}
+		LocalHistogram.RenderRect (Apply, radius, source, destination, roi);
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+		// --- Methods ---
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Noise"); }
-		}
-
-		public ReduceNoiseData Data { get { return (ReduceNoiseData) EffectData!; } } // NRT - Set in constructor
-
-		public ReduceNoiseEffect ()
+		ColorBgra Apply (ColorBgra color, int area, Span<int> hb, Span<int> hg, Span<int> hr, Span<int> ha)
 		{
-			EffectData = new ReduceNoiseData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		#region Algorithm Code Ported From PDN
-		public override unsafe ColorBgra Apply (ColorBgra color, int area, int* hb, int* hg, int* hr, int* ha)
-		{
-			ColorBgra normalized = GetPercentileOfColor (color, area, hb, hg, hr, ha);
+			ColorBgra straightColor = color.ToStraightAlpha ();
+			ColorBgra normalized =
+				ColorBgra.FromBgra (
+					GetPercentileChannel (hb, area, straightColor.B),
+					GetPercentileChannel (hg, area, straightColor.G),
+					GetPercentileChannel (hr, area, straightColor.R),
+					straightColor.A)
+				.ToPremultipliedAlpha ();
 			double lerp = strength * (1 - 0.75 * color.GetIntensity ());
-
 			return ColorBgra.Lerp (color, normalized, lerp);
 		}
+	}
 
-		private static unsafe ColorBgra GetPercentileOfColor (ColorBgra color, int area, int* hb, int* hg, int* hr, int* ha)
-		{
-			int rc = 0;
-			int gc = 0;
-			int bc = 0;
+	private static byte GetPercentileChannel (Span<int> hc, int area, byte straightChannel)
+	{
+		int cc = 0;
+		for (int i = 0; i < straightChannel; i++)
+			cc += hc[i];
+		cc = cc * 255 / area;
+		return (byte) cc;
+	}
 
-			for (int i = 0; i < color.R; ++i)
-				rc += hr[i];
+	public sealed class ReduceNoiseData : EffectData
+	{
+		[Caption ("Radius")]
+		[MinimumValue (1), MaximumValue (200)]
+		public int Radius { get; set; } = 6;
 
-			for (int i = 0; i < color.G; ++i)
-				gc += hg[i];
-
-			for (int i = 0; i < color.B; ++i)
-				bc += hb[i];
-
-			rc = (rc * 255) / area;
-			gc = (gc * 255) / area;
-			bc = (bc * 255) / area;
-
-			return ColorBgra.FromBgr ((byte) bc, (byte) gc, (byte) rc);
-		}
-
-		public unsafe override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			this.radius = Data.Radius;
-			this.strength = -0.2 * Data.Strength;
-
-			foreach (Gdk.Rectangle rect in rois)
-				RenderRect (this.radius, src, dest, rect);
-		}
-		#endregion
-
-		public class ReduceNoiseData : EffectData
-		{
-			[Caption ("Radius"), MinimumValue (1), MaximumValue (200)]
-			public int Radius = 6;
-
-			[Caption ("Strength"), MinimumValue (0), IncrementValue (0.01), DigitsValue (2), MaximumValue (1)]
-			public double Strength = 0.4;
-		}
+		[Caption ("Strength")]
+		[MinimumValue (0), MaximumValue (1)]
+		[IncrementValue (0.01), DigitsValue (2),]
+		public double Strength { get; set; } = 0.4;
 	}
 }

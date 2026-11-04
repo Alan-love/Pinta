@@ -8,160 +8,134 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class FrostedGlassEffect : BaseEffect
 {
-	public class FrostedGlassEffect : BaseEffect
+	public override string Icon => Resources.Icons.EffectsDistortFrostedGlass;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Name => Translations.GetString ("Frosted Glass");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Distort");
+
+	public FrostedGlassData Data => (FrostedGlassData) EffectData!;
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public FrostedGlassEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Distort.FrostedGlass.png"; }
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new FrostedGlassData ();
+	}
+
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
+
+	// Algorithm Code Ported From PDN
+
+	private sealed record FrostedGlassSettings (
+		double min_radius,
+		double radius_offset,
+		double bias,
+		int num_samples,
+		int src_width,
+		int src_height,
+		RandomSeed seed);
+
+	private FrostedGlassSettings CreateSettings (ImageSurface src)
+	{
+		var data = Data;
+		return new (
+			min_radius: Math.Min (data.MinScatterRadius, data.MaxScatterRadius),
+			radius_offset: Math.Max (data.MaxScatterRadius - data.MinScatterRadius, 0),
+			bias: data.Diffusion,
+			num_samples: data.Smoothness,
+			src_width: src.Width,
+			src_height: src.Height,
+			seed: data.Seed
+		);
+	}
+
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
+	{
+		FrostedGlassSettings settings = CreateSettings (source);
+
+		ReadOnlySpan<ColorBgra> src_data = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> dst_data = destination.GetPixelData ();
+
+		Random random = new (settings.seed.GetValueForRegion (roi));
+
+		for (int y = roi.Top; y <= roi.Bottom; ++y) {
+
+			var dst_row = dst_data.Slice (y * settings.src_width, settings.src_width);
+
+			for (int x = roi.Left; x <= roi.Right; ++x)
+				dst_row[x] = GetFinalPixelColor (settings, random, source, src_data, x, y);
+		}
+	}
+
+	private static ColorBgra GetFinalPixelColor (FrostedGlassSettings settings, Random random, ImageSurface src, ReadOnlySpan<ColorBgra> src_data, int x, int y)
+	{
+		Span<ColorBgra> samples = stackalloc ColorBgra[settings.num_samples];
+
+		// Blend together several samples between the min & max radius.
+		// Increasing "diffusion" biases the distance offset toward the max radius.
+		for (int sampleIndex = 0; sampleIndex < settings.num_samples; ++sampleIndex) {
+			double angle = random.NextDouble () * Math.PI * 2;
+			double t = random.NextDouble ();
+			double offset = Bias (t, settings.bias) * settings.radius_offset;
+			double distance = settings.min_radius + offset;
+
+			(double sin, double cos) = Math.SinCos (angle);
+			double sampleX = x + distance * cos;
+			double sampleY = y + distance * sin;
+
+			samples[sampleIndex] = src.GetBilinearSampleReflected (
+				src_data, settings.src_width, settings.src_height,
+				(float) sampleX, (float) sampleY);
 		}
 
-		public override string Name {
-			get { return Translations.GetString ("Frosted Glass"); }
-		}
+		return ColorBgra.Blend (samples, ColorBgra.Transparent);
+	}
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	/// <summary>
+	/// Shlick's bias function.
+	/// This is used to bias the random samples toward the min or max radius.
+	/// A value of 0.5 (default) is linear, so the samples are spread out evenly.
+	/// </summary>
+	private static double Bias (double x, double bias)
+	{
+		return x / ((1.0 / bias - 2.0) * (1.0 - x) + 1.0);
+	}
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Distort"); }
-		}
+	public sealed class FrostedGlassData : EffectData
+	{
+		[Caption ("Maximum Scatter Radius")]
+		[MinimumValue (0), MaximumValue (200)]
+		public int MaxScatterRadius { get; set; } = 3;
 
-		public FrostedGlassData Data {
-			get { return (FrostedGlassData) EffectData!; } // NRT - Set in constructor
-		}
+		[Caption ("Minimum Scatter Radius")]
+		[MinimumValue (0), MaximumValue (200)]
+		public int MinScatterRadius { get; set; } = 0;
 
-		private Random random = new Random ();
+		[Caption ("Diffusion")]
+		[MinimumValue (0), MaximumValue (1)]
+		public double Diffusion { get; set; } = 0.5;
 
-		public FrostedGlassEffect ()
-		{
-			EffectData = new FrostedGlassData ();
-		}
+		[Caption ("Smoothness")]
+		[MinimumValue (1), MaximumValue (16)]
+		public int Smoothness { get; set; } = 2;
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		#region Algorithm Code Ported From PDN
-		unsafe public override void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			int width = src.Width;
-			int height = src.Height;
-			int r = Data.Amount;
-			Random localRandom = this.random;
-
-			int* intensityCount = stackalloc int[256];
-			uint* avgRed = stackalloc uint[256];
-			uint* avgGreen = stackalloc uint[256];
-			uint* avgBlue = stackalloc uint[256];
-			uint* avgAlpha = stackalloc uint[256];
-			byte* intensityChoices = stackalloc byte[(1 + (r * 2)) * (1 + (r * 2))];
-
-			int src_width = src.Width;
-			ColorBgra* src_data_ptr = (ColorBgra*) src.DataPtr;
-
-			foreach (var rect in rois) {
-				int rectTop = rect.Top;
-				int rectBottom = rect.GetBottom ();
-				int rectLeft = rect.Left;
-				int rectRight = rect.GetRight ();
-
-				for (int y = rectTop; y <= rectBottom; ++y) {
-					ColorBgra* dstPtr = dst.GetPointAddress (rect.Left, y);
-
-					int top = y - r;
-					int bottom = y + r + 1;
-
-					if (top < 0) {
-						top = 0;
-					}
-
-					if (bottom > height) {
-						bottom = height;
-					}
-
-					for (int x = rectLeft; x <= rectRight; ++x) {
-						int intensityChoicesIndex = 0;
-
-						for (int i = 0; i < 256; ++i) {
-							intensityCount[i] = 0;
-							avgRed[i] = 0;
-							avgGreen[i] = 0;
-							avgBlue[i] = 0;
-							avgAlpha[i] = 0;
-						}
-
-						int left = x - r;
-						int right = x + r + 1;
-
-						if (left < 0) {
-							left = 0;
-						}
-
-						if (right > width) {
-							right = width;
-						}
-
-						for (int j = top; j < bottom; ++j) {
-							if (j < 0 || j >= height) {
-								continue;
-							}
-
-							ColorBgra* srcPtr = src.GetPointAddressUnchecked (src_data_ptr, src_width, left, j);
-
-							for (int i = left; i < right; ++i) {
-								byte intensity = srcPtr->GetIntensityByte ();
-
-								intensityChoices[intensityChoicesIndex] = intensity;
-								++intensityChoicesIndex;
-
-								++intensityCount[intensity];
-
-								avgRed[intensity] += srcPtr->R;
-								avgGreen[intensity] += srcPtr->G;
-								avgBlue[intensity] += srcPtr->B;
-								avgAlpha[intensity] += srcPtr->A;
-
-								++srcPtr;
-							}
-						}
-
-						int randNum;
-
-						lock (localRandom) {
-							randNum = localRandom.Next (intensityChoicesIndex);
-						}
-
-						byte chosenIntensity = intensityChoices[randNum];
-
-						byte R = (byte) (avgRed[chosenIntensity] / intensityCount[chosenIntensity]);
-						byte G = (byte) (avgGreen[chosenIntensity] / intensityCount[chosenIntensity]);
-						byte B = (byte) (avgBlue[chosenIntensity] / intensityCount[chosenIntensity]);
-						byte A = (byte) (avgAlpha[chosenIntensity] / intensityCount[chosenIntensity]);
-
-						*dstPtr = ColorBgra.FromBgra (B, G, R, A);
-						++dstPtr;
-
-						// prepare the array for the next loop iteration
-						for (int i = 0; i < intensityChoicesIndex; ++i) {
-							intensityChoices[i] = 0;
-						}
-					}
-				}
-			}
-		}
-		#endregion
-
-		public class FrostedGlassData : EffectData
-		{
-			[Caption ("Amount"), MinimumValue (1), MaximumValue (10)]
-			public int Amount = 1;
-		}
+		[Caption ("Random Noise Seed")]
+		public RandomSeed Seed { get; set; } = new (0);
 	}
 }

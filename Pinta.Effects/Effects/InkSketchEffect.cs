@@ -8,164 +8,147 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Collections.Immutable;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class InkSketchEffect : BaseEffect
 {
-	public class InkSketchEffect : BaseEffect
+	private static readonly ImmutableArray<ImmutableArray<int>> conv;
+	private const int Size = 5;
+	private const int Radius = (Size - 1) / 2;
+
+	private readonly GlowEffect glow_effect;
+	private readonly UnaryPixelOps.Desaturate desaturate_op;
+	private readonly UserBlendOps.DarkenBlendOp darken_op;
+
+	public override string Icon
+		=> Resources.Icons.EffectsArtisticInkSketch;
+
+	public sealed override bool IsTileable
+		=> true;
+
+	public override string Name
+		=> Translations.GetString ("Ink Sketch");
+
+	public override bool IsConfigurable
+		=> true;
+
+	public override string EffectMenuCategory
+		=> Translations.GetString ("Artistic");
+
+	public InkSketchData Data
+		=> (InkSketchData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public InkSketchEffect (IServiceProvider services)
 	{
-		private static readonly int[][] conv;
-		private const int size = 5;
-		private const int radius = (size - 1) / 2;
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
 
-		private GlowEffect glowEffect;
-		private UnaryPixelOps.Desaturate desaturateOp;
-		private UserBlendOps.DarkenBlendOp darkenOp;
+		EffectData = new InkSketchData ();
 
-		public override string Icon {
-			get { return "Menu.Effects.Artistic.InkSketch.png"; }
-		}
+		glow_effect = new GlowEffect (services);
+		desaturate_op = new UnaryPixelOps.Desaturate ();
+		darken_op = new UserBlendOps.DarkenBlendOp ();
+	}
 
-		public override string Name {
-			get { return Translations.GetString ("Ink Sketch"); }
-		}
+	static InkSketchEffect ()
+	{
+		conv = [
+			[-1, -1, -1, -1, -1],
+			[-1, -1, -1, -1, -1],
+			[-1, -1, 30, -1, -1],
+			[-1, -1, -1, -1, -1],
+			[-1, -1, -5, -1, -1],
+		];
+	}
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Artistic"); }
-		}
+	// Algorithm Code Ported From PDN
 
-		public InkSketchData Data { get { return (InkSketchData) EffectData!; } } // NRT - Set in constructor
+	public override void Render (ImageSurface source, ImageSurface destination, ReadOnlySpan<RectangleI> rois)
+	{
+		// Glow background 
+		glow_effect.Data.Radius = 6;
+		glow_effect.Data.Brightness = -(Data.Coloring - 50) * 2;
+		glow_effect.Data.Contrast = -(Data.Coloring - 50) * 2;
 
-		public InkSketchEffect ()
-		{
-			EffectData = new InkSketchData ();
+		glow_effect.Render (source, destination, rois);
 
-			glowEffect = new GlowEffect ();
-			desaturateOp = new UnaryPixelOps.Desaturate ();
-			darkenOp = new UserBlendOps.DarkenBlendOp ();
-		}
+		int width = source.Width;
 
-		static InkSketchEffect ()
-		{
-			conv = new int[5][];
+		ReadOnlySpan<ColorBgra> sourceData = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
 
-			for (int i = 0; i < conv.Length; ++i)
-				conv[i] = new int[5];
+		// Create black outlines by finding the edges of objects 
+		foreach (RectangleI roi in rois) {
+			for (int y = roi.Top; y <= roi.Bottom; ++y) {
 
-			conv[0] = new int[] { -1, -1, -1, -1, -1 };
-			conv[1] = new int[] { -1, -1, -1, -1, -1 };
-			conv[2] = new int[] { -1, -1, 30, -1, -1 };
-			conv[3] = new int[] { -1, -1, -1, -1, -1 };
-			conv[4] = new int[] { -1, -1, -5, -1, -1 };
-		}
+				int top = Math.Max (y - Radius, 0);
+				int bottom = Math.Min (y + Radius + 1, destination.Height);
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
+				Span<ColorBgra> destinationRow = destinationData.Slice (y * width, width);
 
-		#region Algorithm Code Ported From PDN
-		public unsafe override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			// Glow backgound 
-			glowEffect.Data.Radius = 6;
-			glowEffect.Data.Brightness = -(Data.Coloring - 50) * 2;
-			glowEffect.Data.Contrast = -(Data.Coloring - 50) * 2;
+				for (int x = roi.Left; x <= roi.Right; ++x) {
 
-			this.glowEffect.Render (src, dest, rois);
+					int left = Math.Max (x - Radius, 0);
+					int right = Math.Min (x + Radius + 1, destination.Width);
 
-			// Create black outlines by finding the edges of objects 
-			foreach (Gdk.Rectangle roi in rois) {
-				for (int y = roi.Top; y <= roi.GetBottom (); ++y) {
-					int top = y - radius;
-					int bottom = y + radius + 1;
+					RectangleI adjustedBounds = RectangleI.FromLTRB (left, top, right, bottom);
+					ColorBgra baseRGB = CreateBaseRGBA (sourceData, width, x, y, adjustedBounds);
+					ColorBgra topLayer = CreateTopLayer (baseRGB);
 
-					if (top < 0) {
-						top = 0;
-					}
-
-					if (bottom > dest.Height) {
-						bottom = dest.Height;
-					}
-
-					ColorBgra* srcPtr = src.GetPointAddress (roi.X, y);
-					ColorBgra* dstPtr = dest.GetPointAddress (roi.X, y);
-
-					for (int x = roi.Left; x <= roi.GetRight (); ++x) {
-						int left = x - radius;
-						int right = x + radius + 1;
-
-						if (left < 0) {
-							left = 0;
-						}
-
-						if (right > dest.Width) {
-							right = dest.Width;
-						}
-
-						int r = 0;
-						int g = 0;
-						int b = 0;
-
-						int src_width = src.Width;
-						ColorBgra* src_dataptr = (ColorBgra*) src.DataPtr;
-
-						for (int v = top; v < bottom; v++) {
-							ColorBgra* pRow = src.GetRowAddressUnchecked (src_dataptr, src_width, v);
-							int j = v - y + radius;
-
-							for (int u = left; u < right; u++) {
-								int i1 = u - x + radius;
-								int w = conv[j][i1];
-
-								ColorBgra* pRef = pRow + u;
-
-								r += pRef->R * w;
-								g += pRef->G * w;
-								b += pRef->B * w;
-							}
-						}
-
-						ColorBgra topLayer = ColorBgra.FromBgr (
-						    Utility.ClampToByte (b),
-						    Utility.ClampToByte (g),
-						    Utility.ClampToByte (r));
-
-						// Desaturate 
-						topLayer = this.desaturateOp.Apply (topLayer);
-
-						// Adjust Brightness and Contrast 
-						if (topLayer.R > (Data.InkOutline * 255 / 100)) {
-							topLayer = ColorBgra.FromBgra (255, 255, 255, topLayer.A);
-						} else {
-							topLayer = ColorBgra.FromBgra (0, 0, 0, topLayer.A);
-						}
-
-						// Change Blend Mode to Darken 
-						ColorBgra myPixel = this.darkenOp.Apply (topLayer, *dstPtr);
-						*dstPtr = myPixel;
-
-						++srcPtr;
-						++dstPtr;
-					}
+					// Change Blend Mode to Darken
+					ColorBgra originalPixel = destinationRow[x];
+					destinationRow[x] = darken_op.Apply (topLayer, originalPixel);
 				}
 			}
 		}
-		#endregion
+	}
 
-		public class InkSketchData : EffectData
-		{
-			[Caption ("Ink Outline"), MinimumValue (0), MaximumValue (99)]
-			public int InkOutline = 50;
-
-			[Caption ("Coloring"), MinimumValue (0), MaximumValue (100)]
-			public int Coloring = 50;
+	private static ColorBgra CreateBaseRGBA (ReadOnlySpan<ColorBgra> sourceData, int width, int x, int y, RectangleI adjustedBounds)
+	{
+		ColorBgra.Aggregate aggregate = new ();
+		for (int v = adjustedBounds.Top; v < adjustedBounds.Bottom; v++) {
+			ReadOnlySpan<ColorBgra> sourceRow = sourceData.Slice (v * width, width);
+			int j = v - y + Radius;
+			for (int u = adjustedBounds.Left; u < adjustedBounds.Right; u++) {
+				int i1 = u - x + Radius;
+				int w = conv[j][i1];
+				ColorBgra sourcePixel = sourceRow[u];
+				aggregate = aggregate.ScaledAdd (sourcePixel, w);
+			}
 		}
+		return aggregate.Clamp ();
+	}
+
+	private ColorBgra CreateTopLayer (ColorBgra baseRGB)
+	{
+		// Desaturate 
+		ColorBgra topLayer = desaturate_op.Apply (baseRGB);
+
+		// Adjust Brightness and Contrast
+		return
+			(topLayer.ToStraightAlpha ().R > (Data.InkOutline * 255 / 100))
+			? ColorBgra.FromBgra (topLayer.A, topLayer.A, topLayer.A, topLayer.A)
+			: ColorBgra.FromBgra (0, 0, 0, topLayer.A);
+	}
+
+	public sealed class InkSketchData : EffectData
+	{
+		[Caption ("Ink Outline")]
+		[MinimumValue (0), MaximumValue (99)]
+		public int InkOutline { get; set; } = 50;
+
+		[Caption ("Coloring")]
+		[MinimumValue (0), MaximumValue (100)]
+		public int Coloring { get; set; } = 50;
 	}
 }

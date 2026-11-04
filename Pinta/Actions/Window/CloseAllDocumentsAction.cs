@@ -27,34 +27,42 @@
 using System;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class CloseAllDocumentsAction : IActionHandler
 {
-	class CloseAllDocumentsAction : IActionHandler
+	private readonly ActionManager actions;
+	private readonly WorkspaceManager workspace;
+	internal CloseAllDocumentsAction (
+		ActionManager actions,
+		WorkspaceManager workspace)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.Window.CloseAll.Activated += Activated;
-		}
+		this.actions = actions;
+		this.workspace = workspace;
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.Window.CloseAll.Activated -= Activated;
-		}
-		#endregion
+	void IActionHandler.Initialize ()
+	{
+		actions.Window.CloseAll.Activated += Activated;
+	}
 
-		private void Activated (object sender, EventArgs e)
-		{
-			while (PintaCore.Workspace.HasOpenDocuments) {
-				int count = PintaCore.Workspace.OpenDocuments.Count;
+	void IActionHandler.Uninitialize ()
+	{
+		actions.Window.CloseAll.Activated -= Activated;
+	}
 
-				PintaCore.Actions.File.Close.Activate ();
+	private void Activated (object sender, EventArgs e)
+	{
+		while (workspace.HasOpenDocuments) {
 
-				// If we still have the same number of open documents,
-				// the user cancelled on a Save prompt.
-				if (count == PintaCore.Workspace.OpenDocuments.Count)
-					return;
-			}
+			int count = workspace.OpenDocuments.Count;
+
+			actions.File.Close.Activate ();
+
+			// If we still have the same number of open documents,
+			// the user cancelled on a Save prompt.
+			if (count == workspace.OpenDocuments.Count)
+				return;
 		}
 	}
 }

@@ -1,21 +1,21 @@
-// 
+//
 // HistoryPad.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2011 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,43 +24,35 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using Gtk;
 using Pinta.Core;
 using Pinta.Docking;
 using Pinta.Gui.Widgets;
 
-namespace Pinta
+namespace Pinta;
+
+internal sealed class HistoryPad : IDockPad
 {
-	public class HistoryPad : IDockPad
+	private readonly EditActions edit;
+	internal HistoryPad (EditActions edit)
 	{
-		public void Initialize (Dock workspace, Application app, GLib.Menu padMenu)
-		{
-			var history = new HistoryTreeView ();
-			DockItem history_item = new DockItem (history, "History") {
-				Label = Translations.GetString ("History")
-			};
+		this.edit = edit;
+	}
 
-			// TODO-GTK3 (docking)
-#if false
-			history_item.DefaultLocation = "Images/Bottom";
-			history_item.Icon = Gtk.IconTheme.Default.LoadIcon(Resources.Icons.LayerDuplicate, 16);
-			history_item.DefaultWidth = 100;
-			history_item.Behavior |= DockItemBehavior.CantClose;
-#endif
-			var history_tb = history_item.AddToolBar ();
-			history_tb.Add (PintaCore.Actions.Edit.Undo.CreateDockToolBarItem ());
-			history_tb.Add (PintaCore.Actions.Edit.Redo.CreateDockToolBarItem ());
+	public void Initialize (Dock workspace)
+	{
+		HistoryListView history = HistoryListView.New ();
 
-			workspace.AddItem (history_item, DockPlacement.Right);
+		DockItem history_item = DockItem.New (
+			child: history,
+			uniqueName: "History",
+			iconName: Resources.Icons.HistoryList);
+		history_item.Label = Translations.GetString ("History");
 
-			var show_history = new ToggleCommand ("history", Translations.GetString ("History"), null, Resources.Icons.LayerDuplicate) {
-				Value = true
-			};
-			app.AddAction (show_history);
-			padMenu.AppendItem (show_history.CreateMenuItem ());
+		Gtk.Box history_tb = history_item.AddToolBar ();
+		history_tb.AppendMultiple ([
+			edit.Undo.CreateDockToolBarItem (),
+			edit.Redo.CreateDockToolBarItem ()]);
 
-			show_history.Toggled += (val) => { history_item.Visible = val; };
-			history_item.VisibilityNotifyEvent += (o, args) => { show_history.Value = history_item.Visible; };
-		}
+		workspace.AddItem (history_item, DockPlacement.Right);
 	}
 }

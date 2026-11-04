@@ -1,49 +1,97 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Gui.Widgets
+namespace Pinta.Gui.Widgets;
+
+[GObject.Subclass<Adw.WrapBox>]
+public sealed partial class ToolBoxWidget
 {
-	public class ToolBoxWidget : Toolbar
+	private ToolManager tools = null!; // NRT - set in factory method
+					   // Stores the button corresponding to each tool.
+	private readonly Dictionary<BaseTool, Gtk.ToggleButton> tool_buttons = new ();
+	// Dummy ToggleButton to use for grouping together the tools' buttons.
+	private readonly Gtk.ToggleButton toggle_group = Gtk.ToggleButton.New ();
+
+	partial void Initialize ()
 	{
-		public ToolBoxWidget ()
-		{
-			HeightRequest = 375;
+		SetOrientation (Gtk.Orientation.Vertical);
+	}
 
-			PintaCore.Tools.ToolAdded += HandleToolAdded;
-			PintaCore.Tools.ToolRemoved += HandleToolRemoved;
+	public static ToolBoxWidget New (ToolManager tools)
+	{
+		ToolBoxWidget widget = NewWithProperties ([]);
+		widget.Configure (tools);
+		return widget;
+	}
 
-			Orientation = Orientation.Vertical;
-			ToolbarStyle = ToolbarStyle.Icons;
+	private void Configure (ToolManager tools)
+	{
+		tools.ToolAdded += (_, e) => HandleToolAdded (e.Tool);
+		tools.ToolRemoved += (_, e) => HandleToolRemoved (e.Tool);
+		tools.ToolActivated += (_, e) => HandleToolActivated (e.Tool);
 
-			ShowAll ();
+		this.tools = tools;
+	}
+
+	private static Gtk.ToggleButton CreateToolButton (BaseTool tool)
+	{
+		Gtk.ToggleButton button = Gtk.ToggleButton.New ();
+		button.IconName = tool.Icon;
+		button.Name = tool.Name;
+		button.FocusOnClick = false;
+
+		button.SetCssClasses ([Resources.Styles.ToolBoxButton, AdwaitaStyles.Flat]);
+
+		string shortcutText = "";
+		if (tool.ShortcutKey != Gdk.Key.Invalid) {
+			string shortcutLabel = Translations.GetString ("Shortcut key");
+			shortcutText = $"{shortcutLabel}: {tool.ShortcutKey.ToUpper ().Name ()}\n";
 		}
 
-		public void AddItem (ToolBoxButton item)
-		{
-			item.IsImportant = false;
+		button.TooltipText = $"{tool.Name}\n{shortcutText}\n{tool.StatusBarText}";
 
-			var index = PintaCore.Tools.ToList ().IndexOf (item.Tool);
+		return button;
+	}
 
-			Insert (item.Tool.ToolItem, index);
+	private void HandleToolAdded (BaseTool tool)
+	{
+		Gtk.ToggleButton toolButton = CreateToolButton (tool);
+		toolButton.Group = toggle_group;
+		toolButton.OnClicked += (_, _) => HandleToolButtonClicked (tool);
+		tool_buttons[tool] = toolButton;
+
+		List<BaseTool> toolList = tools.ToList ();
+		int prevIndex = toolList.IndexOf (tool) - 1;
+		if (prevIndex >= 0) {
+			BaseTool prevTool = toolList[prevIndex];
+			Widget? prevSibling = tool_buttons[prevTool];
+			InsertChildAfter (toolButton, prevSibling);
+		} else {
+			Prepend (toolButton);
 		}
+	}
 
-		public void RemoveItem (ToolButton item)
-		{
-			Remove (item);
-		}
+	private void HandleToolButtonClicked (BaseTool tool)
+	{
+		tools.SetCurrentTool (tool);
+	}
 
-		private void HandleToolAdded (object? sender, ToolEventArgs e)
-		{
-			AddItem (e.Tool.ToolItem);
-		}
+	/// <summary>
+	/// If the tool was switched without clicking on the button (e.g. via shortcut key),
+	/// ensure the tool's button is active. Note we don't need to deactivate the previous
+	/// button since they're all in the same toggle button group.
+	/// </summary>
+	private void HandleToolActivated (BaseTool tool)
+	{
+		Gtk.ToggleButton toolButton = tool_buttons[tool];
+		toolButton.Active = true;
+	}
 
-		private void HandleToolRemoved (object? sender, ToolEventArgs e)
-		{
-			RemoveItem (e.Tool.ToolItem);
-		}
+	private void HandleToolRemoved (BaseTool tool)
+	{
+		Gtk.ToggleButton toolButton = tool_buttons[tool];
+		Remove (toolButton);
 	}
 }

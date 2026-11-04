@@ -24,32 +24,35 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class ImageTabsToggledAction : IActionHandler
 {
-	class ImageTabsToggledAction : IActionHandler
+	private readonly ViewActions view;
+	private readonly ChromeManager chrome;
+	internal ImageTabsToggledAction (
+		ViewActions view,
+		ChromeManager chrome)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.View.ImageTabs.Toggled += Activated;
-		}
+		this.view = view;
+		this.chrome = chrome;
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.View.ImageTabs.Toggled -= Activated;
-		}
-		#endregion
+	void IActionHandler.Initialize ()
+	{
+		view.ImageTabs.Toggled += Activated;
+	}
 
-		private void Activated (bool value)
-		{
-			// TODO-GTK3 (docking)
-#if false
-			Pinta.Docking.DockNotebook.DockNotebookManager.TabStripVisible = value;
-#endif
-		}
+	void IActionHandler.Uninitialize ()
+	{
+		view.ImageTabs.Toggled -= Activated;
+	}
+
+	private void Activated (bool value, bool interactive)
+	{
+		var notebook = (Docking.DockNotebook) chrome.ImageTabsNotebook;
+		notebook.EnableTabs = value;
 	}
 }

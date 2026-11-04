@@ -24,92 +24,121 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
+using System.Collections.Generic;
 using Cairo;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+/// <summary>
+/// The base class for all brushes.
+/// </summary>
+[Mono.Addins.TypeExtensionPoint]
+public abstract class BasePaintBrush
 {
 	/// <summary>
-	/// The base class for all brushes.
+	/// The name of the brush.
 	/// </summary>
-	// TODO-GTK3 (addins)
-	// [TypeExtensionPoint]
-	public abstract class BasePaintBrush
+	public abstract string Name { get; }
+
+	/// <summary>
+	/// Priority value for ordering brushes. If the priority is zero, then
+	/// alphabetical ordering is used.
+	/// </summary>
+	public virtual int Priority => 0;
+
+	/// <summary>
+	/// Used to multiply the alpha value of the stroke color by a
+	/// constant factor.
+	/// </summary>
+	public virtual double StrokeAlphaMultiplier => 1;
+
+	/// <summary>
+	/// If nonzero, brush will be reapplied after given amount of
+	/// milliseconds.
+	/// </summary>
+	public virtual uint MillisecondsBeforeReapply => 0;
+
+	/// <summary>
+	/// List of additional brush-specific options which the user
+	/// can set in the UI.
+	/// </summary>
+	public virtual List<ToolOption> Options { get; protected set; } = [];
+
+	public delegate void CursorChangeHandler ();
+
+	public event CursorChangeHandler? OnCursorChanged;
+
+	public void DoMouseUp ()
 	{
-		private static Random random = new Random ();
+		OnMouseUp ();
+	}
 
-		/// <summary>
-		/// The name of the brush.
-		/// </summary>
-		public abstract string Name { get; }
+	public void DoMouseDown ()
+	{
+		OnMouseDown ();
+	}
 
-		/// <summary>
-		/// Priority value for ordering brushes. If the priority is zero, then
-		/// alphabetical ordering is used.
-		/// </summary>
-		public virtual int Priority {
-			get { return 0; }
-		}
+	public RectangleI DoMouseMove (
+		Context g,
+		ImageSurface surface,
+		BrushStrokeArgs strokeArgs)
+	{
+		return OnMouseMove (g, surface, strokeArgs);
+	}
 
-		/// <summary>
-		/// Random number generator. This can be used to implement brushes with
-		/// random effects.
-		/// </summary>
-		public Random Random {
-			get { return random; }
-		}
+	/// <summary>
+	/// Notify the paint brush that the tool's line width has changed so that it
+	/// can refresh its cursor.
+	/// </summary>
+	/// <param name="lineWidth">New line width set in brush tool</param>
+	public virtual void UpdateLineWidth (int lineWidth)
+	{
+		CursorChanged ();
+	}
 
-		/// <summary>
-		/// Used to multiply the alpha value of the stroke color by a
-		/// constant factor.
-		/// </summary>
-		public virtual double StrokeAlphaMultiplier {
-			get { return 1; }
-		}
+	/// <summary>
+	/// Get the cursor appropriate for the brush's current settings.
+	/// </summary>
+	/// <returns>Cursor returned by the brush, or null if the tool should use the default cursor.</returns>
+	public virtual Gdk.Cursor? GetCursor ()
+	{
+		return null;
+	}
 
-		public virtual void DoMouseUp ()
-		{
-			OnMouseUp ();
-		}
+	/// <summary>
+	/// Event handler called when the mouse is released.
+	/// </summary>
+	protected virtual void OnMouseUp ()
+	{
+	}
 
-		public virtual void DoMouseDown ()
-		{
-			OnMouseDown ();
-		}
+	/// <summary>
+	/// Event handler called when the mouse is pressed down.
+	/// </summary>
+	protected virtual void OnMouseDown ()
+	{
+	}
 
-		public virtual Gdk.Rectangle DoMouseMove (Context g, Color strokeColor, ImageSurface surface,
-							  int x, int y, int lastX, int lastY)
-		{
-			return OnMouseMove (g, strokeColor, surface, x, y, lastX, lastY);
-		}
+	/// <summary>
+	/// Event handler called when the mouse is moved. This method is where
+	/// the brush should perform its drawing.
+	/// </summary>
+	/// <param name="g">The current Cairo drawing context.</param>
+	/// <param name="surface">Image surface to draw on.</param>
+	/// <param name="strokeArgs">Information about the current stroke and mouse movement.</param>
+	/// <returns>A rectangle containing the area of the canvas that should be redrawn.</returns>
+	protected abstract RectangleI OnMouseMove (
+		Context g,
+		ImageSurface surface,
+		BrushStrokeArgs strokeArgs);
 
-		/// <summary>
-		/// Event handler called when the mouse is released.
-		/// </summary>
-		protected virtual void OnMouseUp ()
-		{
-		}
 
-		/// <summary>
-		/// Event handler called when the mouse is pressed down.
-		/// </summary>
-		protected virtual void OnMouseDown ()
-		{
-		}
-
-		/// <summary>
-		/// Event handler called when the mouse is moved. This method is where
-		/// the brush should perform its drawing.
-		/// </summary>
-		/// <param name="g">The current Cairo drawing context.</param>
-		/// <param name="strokeColor">The current stroke color.</param>
-		/// <param name="surface">Image surface to draw on.</param>
-		/// <param name="x">The current x coordinate of the mouse.</param>
-		/// <param name="y">The current y coordinate of the mouse.</param>
-		/// <param name="lastX">The previous x coordinate of the mouse.</param>
-		/// <param name="lastY">The previous y coordinate of the mouse.</param>
-		/// <returns>A rectangle containing the area of the canvas that should be redrawn.</returns>
-		protected abstract Gdk.Rectangle OnMouseMove (Context g, Color strokeColor, ImageSurface surface,
-							      int x, int y, int lastX, int lastY);
+	/// <summary>
+	/// Notify listeners that the brush's cursor has been changed (most likely
+	/// in response to the user having changed a setting).
+	/// </summary>
+	protected void CursorChanged ()
+	{
+		OnCursorChanged?.Invoke ();
 	}
 }

@@ -25,17 +25,15 @@
 // THE SOFTWARE.
 
 using System;
-using System.ComponentModel;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class ToolEventArgs : EventArgs
 {
-	public class ToolEventArgs : EventArgs
-	{
-		public BaseTool Tool { get; private set; }
+	public BaseTool Tool { get; }
 
-		public ToolEventArgs (BaseTool tool)
-		{
-			Tool = tool;
-		}
+	public ToolEventArgs (BaseTool tool)
+	{
+		Tool = tool;
 	}
 }

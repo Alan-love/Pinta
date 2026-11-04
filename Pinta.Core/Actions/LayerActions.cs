@@ -1,21 +1,21 @@
-// 
+//
 // LayerActions.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,293 +25,380 @@
 // THE SOFTWARE.
 
 using System;
-using System.IO;
-using Gdk;
-using Gtk;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class LayerActions
 {
-	public class LayerActions
+	public Command AddNewLayer { get; }
+	public Command DeleteLayer { get; }
+	public Command DuplicateLayer { get; }
+	public Command MergeLayerDown { get; }
+	public Command ImportFromFile { get; }
+	public Command FlipHorizontal { get; }
+	public Command FlipVertical { get; }
+	public Command RotateZoom { get; }
+	public Command MoveLayerUp { get; }
+	public Command MoveLayerDown { get; }
+	public Command Properties { get; }
+
+	private readonly ChromeManager chrome;
+	private readonly ImageConverterManager image_formats;
+	private readonly RecentFileManager recent_files;
+	private readonly ToolManager tools;
+	private readonly WorkspaceManager workspace;
+	private readonly ImageActions image;
+	public LayerActions (
+		ChromeManager chrome,
+		ImageConverterManager imageFormats,
+		RecentFileManager recentFiles,
+		ToolManager tools,
+		WorkspaceManager workspace,
+		ImageActions image)
 	{
-		public Command AddNewLayer { get; private set; }
-		public Command DeleteLayer { get; private set; }
-		public Command DuplicateLayer { get; private set; }
-		public Command MergeLayerDown { get; private set; }
-		public Command ImportFromFile { get; private set; }
-		public Command FlipHorizontal { get; private set; }
-		public Command FlipVertical { get; private set; }
-		public Command RotateZoom { get; private set; }
-		public Command MoveLayerUp { get; private set; }
-		public Command MoveLayerDown { get; private set; }
-		public Command Properties { get; private set; }
+		AddNewLayer = new Command (
+			"addnewlayer",
+			Translations.GetString ("Add New Layer"),
+			null,
+			Resources.Icons.LayerNew,
+			shortcuts: ["<Primary><Shift>N"]);
 
-		public LayerActions ()
-		{
-			AddNewLayer = new Command ("addnewlayer", Translations.GetString ("Add New Layer"), null, Resources.Icons.LayerNew);
-			DeleteLayer = new Command ("deletelayer", Translations.GetString ("Delete Layer"), null, Resources.Icons.LayerDelete);
-			DuplicateLayer = new Command ("duplicatelayer", Translations.GetString ("Duplicate Layer"), null, Resources.Icons.LayerDuplicate);
-			MergeLayerDown = new Command ("mergelayerdown", Translations.GetString ("Merge Layer Down"), null, Resources.Icons.LayerMergeDown);
-			ImportFromFile = new Command ("importfromfile", Translations.GetString ("Import from File..."), null, Resources.Icons.LayerImport);
-			FlipHorizontal = new Command ("fliphorizontal", Translations.GetString ("Flip Horizontal"), null, Resources.Icons.LayerFlipHorizontal);
-			FlipVertical = new Command ("flipvertical", Translations.GetString ("Flip Vertical"), null, Resources.Icons.LayerFlipVertical);
-			RotateZoom = new Command ("RotateZoom", Translations.GetString ("Rotate / Zoom Layer..."), null, Resources.Icons.LayerRotateZoom);
-			MoveLayerUp = new Command ("movelayerup", Translations.GetString ("Move Layer Up"), null, Resources.Icons.LayerMoveUp);
-			MoveLayerDown = new Command ("movelayerdown", Translations.GetString ("Move Layer Down"), null, Resources.Icons.LayerMoveDown);
-			Properties = new Command ("properties", Translations.GetString ("Layer Properties..."), null, Resources.Icons.LayerProperties);
+		DeleteLayer = new Command (
+			"deletelayer",
+			Translations.GetString ("Delete Layer"),
+			null,
+			Resources.Icons.LayerDelete,
+			shortcuts: ["<Primary><Shift>Delete"]);
+
+		DuplicateLayer = new Command (
+			"duplicatelayer",
+			Translations.GetString ("Duplicate Layer"),
+			null,
+			Resources.Icons.LayerDuplicate,
+			shortcuts: ["<Primary><Shift>D"]);
+
+		MergeLayerDown = new Command (
+			"mergelayerdown",
+			Translations.GetString ("Merge Layer Down"),
+			null,
+			Resources.Icons.LayerMergeDown,
+			shortcuts: ["<Primary>M"]);
+
+		ImportFromFile = new Command (
+			"importfromfile",
+			Translations.GetString ("Import from File..."),
+			null,
+			Resources.Icons.LayerImport);
+
+		FlipHorizontal = new Command (
+			"fliplayerhorizontal",
+			Translations.GetString ("Flip Horizontal"),
+			null,
+			Resources.Icons.LayerFlipHorizontal,
+			shortcuts: ["<Primary>F"]);
+
+		FlipVertical = new Command (
+			"fliplayervertical",
+			Translations.GetString ("Flip Vertical"),
+			null,
+			Resources.Icons.LayerFlipVertical,
+			shortcuts: ["<Shift>F"]);
+
+		RotateZoom = new Command (
+			"RotateZoom",
+			Translations.GetString ("Rotate / Zoom Layer..."),
+			null,
+			Resources.Icons.LayerRotateZoom);
+
+		MoveLayerUp = new Command (
+			"movelayerup",
+			Translations.GetString ("Move Layer Up"),
+			null,
+			Resources.StandardIcons.LayerMoveUp);
+
+		MoveLayerDown = new Command (
+			"movelayerdown",
+			Translations.GetString ("Move Layer Down"),
+			null,
+			Resources.StandardIcons.LayerMoveDown);
+
+		Properties = new Command (
+			"properties",
+			Translations.GetString ("Layer Properties..."),
+			null,
+			Resources.Icons.LayerProperties,
+			shortcuts: ["F4"]);
+
+		this.chrome = chrome;
+		image_formats = imageFormats;
+		recent_files = recentFiles;
+		this.tools = tools;
+		this.workspace = workspace;
+		this.image = image;
+	}
+
+	public void RegisterActions (Gtk.Application app)
+	{
+		app.AddCommands ([
+			AddNewLayer,
+			DeleteLayer,
+			DuplicateLayer,
+			MergeLayerDown,
+			ImportFromFile,
+
+			FlipHorizontal,
+			FlipVertical,
+			RotateZoom,
+
+			Properties,
+
+			MoveLayerDown,
+			MoveLayerUp]);
+	}
+
+	public void RegisterHandlers ()
+	{
+		AddNewLayer.Activated += HandlePintaCoreActionsLayersAddNewLayerActivated;
+		DeleteLayer.Activated += HandlePintaCoreActionsLayersDeleteLayerActivated;
+		DuplicateLayer.Activated += HandlePintaCoreActionsLayersDuplicateLayerActivated;
+		MergeLayerDown.Activated += HandlePintaCoreActionsLayersMergeLayerDownActivated;
+		MoveLayerDown.Activated += HandlePintaCoreActionsLayersMoveLayerDownActivated;
+		MoveLayerUp.Activated += HandlePintaCoreActionsLayersMoveLayerUpActivated;
+		FlipHorizontal.Activated += HandlePintaCoreActionsLayersFlipHorizontalActivated;
+		FlipVertical.Activated += HandlePintaCoreActionsLayersFlipVerticalActivated;
+		ImportFromFile.Activated += HandlePintaCoreActionsLayersImportFromFileActivated;
+
+		workspace.LayerAdded += EnableOrDisableLayerActions;
+		workspace.LayerRemoved += EnableOrDisableLayerActions;
+		workspace.SelectedLayerChanged += EnableOrDisableLayerActions;
+		workspace.ActiveDocumentChanged += EnableOrDisableLayerActions;
+
+		EnableOrDisableLayerActions (null, EventArgs.Empty);
+	}
+
+	private void EnableOrDisableLayerActions (object? sender, EventArgs e)
+	{
+		Document? activeDoc = workspace.ActiveDocumentOrDefault;
+
+		bool hasMultipleLayers = activeDoc?.Layers.UserLayers.Count > 1;
+		DeleteLayer.Sensitive = hasMultipleLayers;
+		image.Flatten.Sensitive = hasMultipleLayers;
+
+		bool canMergeDown = activeDoc?.Layers.CurrentUserLayerIndex > 0;
+		MergeLayerDown.Sensitive = canMergeDown;
+		MoveLayerDown.Sensitive = canMergeDown;
+
+		MoveLayerUp.Sensitive = activeDoc != null
+			&& activeDoc.Layers.CurrentUserLayerIndex < activeDoc.Layers.UserLayers.Count - 1;
+	}
+
+	private Gtk.FileFilter CreateImagesFileFilter ()
+	{
+		Gtk.FileFilter imagesFilter = Gtk.FileFilter.New ();
+		foreach (var format in image_formats.Formats) {
+			if (!format.IsImportAvailable ()) continue;
+			foreach (string ext in format.Extensions)
+				imagesFilter.AddPattern ($"*.{ext}");
 		}
 
-		#region Initialization
-		public void RegisterActions (Gtk.Application app, GLib.Menu menu)
-		{
-			app.AddAccelAction (AddNewLayer, "<Primary><Shift>N");
-			menu.AppendItem (AddNewLayer.CreateMenuItem ());
+		// On Unix-like systems, file extensions are often considered optional.
+		// Files can often also be identified by their MIME types.
+		// Windows does not understand MIME types natively.
+		// Adding a MIME filter on Windows would break the native file picker and force a GTK file picker instead.
+		if (SystemManager.GetOperatingSystem () != OS.Windows)
+			foreach (var format in image_formats.Formats)
+				foreach (var mime in format.Mimes)
+					imagesFilter.AddMimeType (mime);
 
-			app.AddAccelAction (DeleteLayer, "<Primary><Shift>Delete");
-			menu.AppendItem (DeleteLayer.CreateMenuItem ());
+		imagesFilter.Name = Translations.GetString ("Image files");
 
-			app.AddAccelAction (DuplicateLayer, "<Primary><Shift>D");
-			menu.AppendItem (DuplicateLayer.CreateMenuItem ());
+		return imagesFilter;
+	}
 
-			app.AddAccelAction (MergeLayerDown, "<Primary>M");
-			menu.AppendItem (MergeLayerDown.CreateMenuItem ());
+	private async void HandlePintaCoreActionsLayersImportFromFileActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
 
-			app.AddAction (ImportFromFile);
-			menu.AppendItem (ImportFromFile.CreateMenuItem ());
+		tools.Commit ();
 
-			var flip_section = new GLib.Menu ();
-			menu.AppendSection (null, flip_section);
+		// Add image files filter
+		using Gtk.FileFilter imagesFilter = CreateImagesFileFilter ();
 
-			app.AddAction (FlipHorizontal);
-			flip_section.AppendItem (FlipHorizontal.CreateMenuItem ());
+		using Gio.ListStore fileFilters = Gio.ListStore.New (Gtk.FileFilter.GetGType ());
+		fileFilters.Append (imagesFilter);
 
-			app.AddAction (FlipVertical);
-			flip_section.AppendItem (FlipVertical.CreateMenuItem ());
+		using Gtk.FileDialog fileDialog = Gtk.FileDialog.New ();
+		fileDialog.SetTitle (Translations.GetString ("Open Image File"));
+		fileDialog.SetFilters (fileFilters);
+		if (recent_files.GetDialogDirectory () is Gio.File dir && dir.QueryExists (null))
+			fileDialog.SetInitialFolder (dir);
 
-			app.AddAction (RotateZoom);
-			flip_section.AppendItem (RotateZoom.CreateMenuItem ());
+		Gio.File? choice = await fileDialog.OpenFileAsync (chrome.MainWindow);
 
-			var prop_section = new GLib.Menu ();
-			menu.AppendSection (null, prop_section);
+		if (choice is null) return;
 
-			app.AddAccelAction (Properties, "F4");
-			prop_section.AppendItem (Properties.CreateMenuItem ());
+		Gio.File? directory = choice.GetParent ();
 
-			app.AddAction (MoveLayerDown);
-			app.AddAction (MoveLayerUp);
-		}
+		if (directory is not null)
+			recent_files.LastDialogDirectory = directory;
 
-		public void CreateLayerWindowToolBar (Gtk.Toolbar toolbar)
-		{
-			toolbar.AppendItem (AddNewLayer.CreateToolBarItem ());
-			toolbar.AppendItem (DeleteLayer.CreateToolBarItem ());
-			toolbar.AppendItem (DuplicateLayer.CreateToolBarItem ());
-			toolbar.AppendItem (MergeLayerDown.CreateToolBarItem ());
-			toolbar.AppendItem (MoveLayerUp.CreateToolBarItem ());
-			toolbar.AppendItem (MoveLayerDown.CreateToolBarItem ());
-			toolbar.AppendItem (Properties.CreateToolBarItem ());
-		}
+		// Open the image and add it to the layers
+		UserLayer layer = doc.Layers.AddNewLayer (choice.GetDisplayName ());
 
-		public void RegisterHandlers ()
-		{
-			AddNewLayer.Activated += HandlePintaCoreActionsLayersAddNewLayerActivated;
-			DeleteLayer.Activated += HandlePintaCoreActionsLayersDeleteLayerActivated;
-			DuplicateLayer.Activated += HandlePintaCoreActionsLayersDuplicateLayerActivated;
-			MergeLayerDown.Activated += HandlePintaCoreActionsLayersMergeLayerDownActivated;
-			MoveLayerDown.Activated += HandlePintaCoreActionsLayersMoveLayerDownActivated;
-			MoveLayerUp.Activated += HandlePintaCoreActionsLayersMoveLayerUpActivated;
-			FlipHorizontal.Activated += HandlePintaCoreActionsLayersFlipHorizontalActivated;
-			FlipVertical.Activated += HandlePintaCoreActionsLayersFlipVerticalActivated;
-			ImportFromFile.Activated += HandlePintaCoreActionsLayersImportFromFileActivated;
-
-			PintaCore.Layers.LayerAdded += EnableOrDisableLayerActions;
-			PintaCore.Layers.LayerRemoved += EnableOrDisableLayerActions;
-			PintaCore.Layers.SelectedLayerChanged += EnableOrDisableLayerActions;
-
-			EnableOrDisableLayerActions (null, EventArgs.Empty);
-		}
-		#endregion
-
-		#region Action Handlers
-		private void EnableOrDisableLayerActions (object? sender, EventArgs e)
-		{
-			if (PintaCore.Workspace.HasOpenDocuments && PintaCore.Workspace.ActiveDocument.Layers.UserLayers.Count > 1) {
-				PintaCore.Actions.Layers.DeleteLayer.Sensitive = true;
-				PintaCore.Actions.Image.Flatten.Sensitive = true;
-			} else {
-				PintaCore.Actions.Layers.DeleteLayer.Sensitive = false;
-				PintaCore.Actions.Image.Flatten.Sensitive = false;
+		using (Gio.FileInputStream fs = choice.Read (null)) {
+			try {
+				using GdkPixbuf.Pixbuf bg = GdkPixbuf.Pixbuf.NewFromStream (fs, cancellable: null)!; // NRT: only nullable when an error is thrown
+				using Cairo.Context context = new (layer.Surface);
+				context.DrawPixbuf (bg, PointD.Zero);
+			} finally {
+				fs.Close (null);
 			}
-
-			if (PintaCore.Workspace.HasOpenDocuments && PintaCore.Workspace.ActiveDocument.Layers.CurrentUserLayerIndex > 0) {
-				PintaCore.Actions.Layers.MergeLayerDown.Sensitive = true;
-				PintaCore.Actions.Layers.MoveLayerDown.Sensitive = true;
-			} else {
-				PintaCore.Actions.Layers.MergeLayerDown.Sensitive = false;
-				PintaCore.Actions.Layers.MoveLayerDown.Sensitive = false;
-			}
-
-			if (PintaCore.Workspace.HasOpenDocuments && PintaCore.Workspace.ActiveDocument.Layers.CurrentUserLayerIndex < PintaCore.Workspace.ActiveDocument.Layers.UserLayers.Count - 1)
-				PintaCore.Actions.Layers.MoveLayerUp.Sensitive = true;
-			else
-				PintaCore.Actions.Layers.MoveLayerUp.Sensitive = false;
 		}
 
-		private void HandlePintaCoreActionsLayersImportFromFileActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
+		AddLayerHistoryItem hist = new (
+			Resources.Icons.LayerImport,
+			Translations.GetString ("Import From File"),
+			doc.Layers.IndexOf (layer));
 
-			using var fcd = new FileChooserNative (
-				Translations.GetString ("Open Image File"),
-				PintaCore.Chrome.MainWindow,
-				FileChooserAction.Open,
-				Translations.GetString ("Open"),
-				Translations.GetString ("Cancel"));
+		// --- Changes to document go after everything else is completed successfully
 
-			fcd.SetCurrentFolder (PintaCore.System.GetDialogDirectory ());
+		doc.Layers.SetCurrentUserLayer (layer);
+		doc.History.PushNewItem (hist);
+		doc.Workspace.Invalidate ();
+	}
 
-			// Add image files filter
-			var ff = new FileFilter ();
-			foreach (var format in PintaCore.System.ImageFormats.Formats) {
-				if (!format.IsWriteOnly ()) {
-					foreach (var ext in format.Extensions)
-						ff.AddPattern (string.Format ("*.{0}", ext));
-				}
-			}
+	private void HandlePintaCoreActionsLayersFlipVerticalActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
 
-			ff.Name = Translations.GetString ("Image files");
-			fcd.AddFilter (ff);
+		tools.Commit ();
 
-			var response = (ResponseType) fcd.Run ();
-			if (response == ResponseType.Accept) {
+		doc.Layers.CurrentUserLayer.FlipVertical ();
+		doc.Workspace.Invalidate ();
+		doc.History.PushNewItem (new InvertHistoryItem (InvertType.FlipLayerVertical, doc.Layers.CurrentUserLayerIndex));
+	}
 
-				string file = fcd.Filename;
+	private void HandlePintaCoreActionsLayersFlipHorizontalActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
 
-				string? directory = Path.GetDirectoryName (file);
-				if (directory is not null)
-					PintaCore.System.LastDialogDirectory = directory;
+		tools.Commit ();
 
-				// Open the image and add it to the layers
-				UserLayer layer = doc.Layers.AddNewLayer (System.IO.Path.GetFileName (file));
+		doc.Layers.CurrentUserLayer.FlipHorizontal ();
+		doc.Workspace.Invalidate ();
+		doc.History.PushNewItem (new InvertHistoryItem (InvertType.FlipLayerHorizontal, doc.Layers.CurrentUserLayerIndex));
+	}
 
-				using (var fs = new FileStream (file, FileMode.Open))
-				using (var bg = new Pixbuf (fs))
-				using (var g = new Cairo.Context (layer.Surface)) {
-					Gdk.CairoHelper.SetSourcePixbuf (g, bg, 0, 0);
-					g.Paint ();
-				}
+	private void HandlePintaCoreActionsLayersMoveLayerUpActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
 
-				doc.Layers.SetCurrentUserLayer (layer);
+		tools.Commit ();
 
-				AddLayerHistoryItem hist = new AddLayerHistoryItem (Resources.Icons.LayerImport, Translations.GetString ("Import From File"), doc.Layers.IndexOf (layer));
-				doc.History.PushNewItem (hist);
+		SwapLayersHistoryItem hist = new (
+			Resources.StandardIcons.LayerMoveUp,
+			Translations.GetString ("Move Layer Up"),
+			doc.Layers.CurrentUserLayerIndex,
+			doc.Layers.CurrentUserLayerIndex + 1);
 
-				doc.Workspace.Invalidate ();
-			}
+		doc.Layers.MoveCurrentLayerUp ();
+		doc.History.PushNewItem (hist);
+	}
 
-		}
+	private void HandlePintaCoreActionsLayersMoveLayerDownActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
 
-		private void HandlePintaCoreActionsLayersFlipVerticalActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
+		tools.Commit ();
 
-			doc.Layers.CurrentUserLayer.FlipVertical ();
-			doc.Workspace.Invalidate ();
-			doc.History.PushNewItem (new InvertHistoryItem (InvertType.FlipLayerVertical, doc.Layers.CurrentUserLayerIndex));
-		}
+		SwapLayersHistoryItem hist = new (
+			Resources.StandardIcons.LayerMoveDown,
+			Translations.GetString ("Move Layer Down"),
+			doc.Layers.CurrentUserLayerIndex,
+			doc.Layers.CurrentUserLayerIndex - 1);
 
-		private void HandlePintaCoreActionsLayersFlipHorizontalActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
+		doc.Layers.MoveCurrentLayerDown ();
+		doc.History.PushNewItem (hist);
+	}
 
-			doc.Layers.CurrentUserLayer.FlipHorizontal ();
-			doc.Workspace.Invalidate ();
-			doc.History.PushNewItem (new InvertHistoryItem (InvertType.FlipLayerHorizontal, doc.Layers.CurrentUserLayerIndex));
-		}
+	private void HandlePintaCoreActionsLayersMergeLayerDownActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
 
-		private void HandlePintaCoreActionsLayersMoveLayerUpActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
+		tools.Commit ();
 
-			SwapLayersHistoryItem hist = new SwapLayersHistoryItem (Resources.Icons.LayerMoveUp, Translations.GetString ("Move Layer Up"), doc.Layers.CurrentUserLayerIndex, doc.Layers.CurrentUserLayerIndex + 1);
+		int bottomLayerIndex = doc.Layers.CurrentUserLayerIndex - 1;
+		Cairo.ImageSurface oldBottomSurface = doc.Layers.UserLayers[bottomLayerIndex].Surface.Clone ();
 
-			doc.Layers.MoveCurrentLayerUp ();
-			doc.History.PushNewItem (hist);
-		}
+		CompoundHistoryItem hist = new (
+			Resources.Icons.LayerMergeDown,
+			Translations.GetString ("Merge Layer Down"));
 
-		private void HandlePintaCoreActionsLayersMoveLayerDownActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
+		DeleteLayerHistoryItem h1 = new (
+			string.Empty,
+			string.Empty,
+			doc.Layers.CurrentUserLayer,
+			doc.Layers.CurrentUserLayerIndex);
 
-			SwapLayersHistoryItem hist = new SwapLayersHistoryItem (Resources.Icons.LayerMoveDown, Translations.GetString ("Move Layer Down"), doc.Layers.CurrentUserLayerIndex, doc.Layers.CurrentUserLayerIndex - 1);
+		doc.Layers.MergeCurrentLayerDown ();
 
-			doc.Layers.MoveCurrentLayerDown ();
-			doc.History.PushNewItem (hist);
-		}
+		SimpleHistoryItem h2 = new (
+			string.Empty,
+			string.Empty,
+			oldBottomSurface,
+			bottomLayerIndex);
+		hist.Push (h1);
+		hist.Push (h2);
 
-		private void HandlePintaCoreActionsLayersMergeLayerDownActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
+		doc.History.PushNewItem (hist);
+	}
 
-			int bottomLayerIndex = doc.Layers.CurrentUserLayerIndex - 1;
-			var oldBottomSurface = doc.Layers.UserLayers[bottomLayerIndex].Surface.Clone ();
+	private void HandlePintaCoreActionsLayersDuplicateLayerActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
 
-			CompoundHistoryItem hist = new CompoundHistoryItem (Resources.Icons.LayerMergeDown, Translations.GetString ("Merge Layer Down"));
-			DeleteLayerHistoryItem h1 = new DeleteLayerHistoryItem (string.Empty, string.Empty, doc.Layers.CurrentUserLayer, doc.Layers.CurrentUserLayerIndex);
+		tools.Commit ();
 
-			doc.Layers.MergeCurrentLayerDown ();
+		UserLayer l = doc.Layers.DuplicateCurrentLayer ();
 
-			SimpleHistoryItem h2 = new SimpleHistoryItem (string.Empty, string.Empty, oldBottomSurface, bottomLayerIndex);
-			hist.Push (h1);
-			hist.Push (h2);
+		// Make new layer the current layer
+		doc.Layers.SetCurrentUserLayer (l);
 
-			doc.History.PushNewItem (hist);
-		}
+		AddLayerHistoryItem hist = new (
+			Resources.Icons.LayerDuplicate,
+			Translations.GetString ("Duplicate Layer"),
+			doc.Layers.IndexOf (l));
+		doc.History.PushNewItem (hist);
+	}
 
-		private void HandlePintaCoreActionsLayersDuplicateLayerActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
+	private void HandlePintaCoreActionsLayersDeleteLayerActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
 
-			UserLayer l = doc.Layers.DuplicateCurrentLayer ();
+		tools.Commit ();
 
-			// Make new layer the current layer
-			doc.Layers.SetCurrentUserLayer (l);
+		DeleteLayerHistoryItem hist = new (
+			Resources.Icons.LayerDelete,
+			Translations.GetString ("Delete Layer"),
+			doc.Layers.CurrentUserLayer,
+			doc.Layers.CurrentUserLayerIndex);
 
-			AddLayerHistoryItem hist = new AddLayerHistoryItem (Resources.Icons.LayerDuplicate, Translations.GetString ("Duplicate Layer"), doc.Layers.IndexOf (l));
-			doc.History.PushNewItem (hist);
-		}
+		doc.Layers.DeleteLayer (doc.Layers.CurrentUserLayerIndex);
 
-		private void HandlePintaCoreActionsLayersDeleteLayerActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
+		doc.History.PushNewItem (hist);
+	}
 
-			DeleteLayerHistoryItem hist = new DeleteLayerHistoryItem (Resources.Icons.LayerDelete, Translations.GetString ("Delete Layer"), doc.Layers.CurrentUserLayer, doc.Layers.CurrentUserLayerIndex);
+	private void HandlePintaCoreActionsLayersAddNewLayerActivated (object sender, EventArgs e)
+	{
+		Document doc = workspace.ActiveDocument;
+		tools.Commit ();
 
-			doc.Layers.DeleteLayer (doc.Layers.CurrentUserLayerIndex, false);
+		UserLayer l = doc.Layers.AddNewLayer (string.Empty);
 
-			doc.History.PushNewItem (hist);
-		}
-
-		private void HandlePintaCoreActionsLayersAddNewLayerActivated (object sender, EventArgs e)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
-			PintaCore.Tools.Commit ();
-
-			UserLayer l = doc.Layers.AddNewLayer (string.Empty);
-
-			// Make new layer the current layer
-			doc.Layers.SetCurrentUserLayer (l);
-
-			AddLayerHistoryItem hist = new AddLayerHistoryItem (Resources.Icons.LayerNew, Translations.GetString ("Add New Layer"), doc.Layers.IndexOf (l));
-			doc.History.PushNewItem (hist);
-		}
-		#endregion
+		AddLayerHistoryItem hist = new (
+			Resources.Icons.LayerNew,
+			Translations.GetString ("Add New Layer"),
+			doc.Layers.IndexOf (l));
+		doc.History.PushNewItem (hist);
 	}
 }

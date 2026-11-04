@@ -1,21 +1,21 @@
-// 
+//
 // ModifyCompressionAction.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,33 +24,37 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class ModifyCompressionAction : IActionHandler
 {
-	class ModifyCompressionAction : IActionHandler
+	private readonly FileActions file;
+	internal ModifyCompressionAction (FileActions file)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.File.ModifyCompression += Activated;
-		}
+		this.file = file;
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.File.ModifyCompression -= Activated;
-		}
-		#endregion
+	void IActionHandler.Initialize ()
+	{
+		file.ModifyCompression += Activated;
+	}
 
-		private void Activated (object? sender, ModifyCompressionEventArgs e)
-		{
-			using var dlg = new JpegCompressionDialog (e.Quality, e.ParentWindow);
-			if (dlg.Run () == (int) Gtk.ResponseType.Ok)
-				e.Quality = dlg.GetCompressionLevel ();
-			else
-				e.Cancel = true;
-		}
+	void IActionHandler.Uninitialize ()
+	{
+		file.ModifyCompression -= Activated;
+	}
+
+	private void Activated (object? sender, ModifyCompressionEventArgs e)
+	{
+		JpegCompressionDialog dlg = JpegCompressionDialog.New (e.Quality, e.ParentWindow);
+
+		if (dlg.RunBlocking () == Gtk.ResponseType.Ok)
+			e.Quality = dlg.CompressionLevel;
+		else
+			e.Cancel = true;
+
+		dlg.Destroy ();
 	}
 }

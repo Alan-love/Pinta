@@ -1,21 +1,21 @@
-// 
+//
 // ProgressDialog.cs
-//  
+//
 // Author:
 //       Greg Lowe <greg@vis.net.nz>
-// 
+//
 // Copyright (c) 2010 Greg Lowe
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -26,77 +26,72 @@
 
 using System;
 using System.Diagnostics.CodeAnalysis;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta
+namespace Pinta;
+
+[GObject.Subclass<Gtk.Dialog>]
+public sealed partial class ProgressDialog : IProgressDialog
 {
-	public class ProgressDialog : Dialog, IProgressDialog
+	private Gtk.Label text_label;
+	private Gtk.ProgressBar progress_bar;
+
+	public event EventHandler? Canceled;
+
+	[MemberNotNull (nameof (text_label))]
+	[MemberNotNull (nameof (progress_bar))]
+	partial void Initialize ()
 	{
-		private Label label;
-		private ProgressBar progress_bar;
-		uint timeout_id;
+		Gtk.Label textLabel = Gtk.Label.New ("");
+		Gtk.ProgressBar progressBar = Gtk.ProgressBar.New ();
 
-		public ProgressDialog ()
-		    : base (string.Empty, PintaCore.Chrome.MainWindow, DialogFlags.Modal)
-		{
-			WindowPosition = WindowPosition.CenterOnParent;
+		// --- References to keep
 
-			this.Build ();
-			timeout_id = 0;
-			Hide ();
-		}
+		text_label = textLabel;
+		progress_bar = progressBar;
 
-		public string Text {
-			get { return label.Text; }
-			set { label.Text = value; }
-		}
+		// --- Initialization (Gtk.Widget)
 
-		public double Progress {
-			get { return progress_bar.Fraction; }
-			set { progress_bar.Fraction = value; }
-		}
+		Hide ();
 
-		public event EventHandler<EventArgs>? Canceled;
+		// --- Initialization (Gtk.Window)
 
-		void IProgressDialog.Show ()
-		{
-			timeout_id = GLib.Timeout.Add (500, () => {
-				this.ShowAll ();
-				timeout_id = 0;
-				return false;
-			});
-		}
+		Modal = true;
+		DefaultWidth = 400;
+		DefaultHeight = 114;
 
-		void IProgressDialog.Hide ()
-		{
-			if (timeout_id != 0)
-				GLib.Source.Remove (timeout_id);
-			this.Hide ();
-		}
+		// --- Initialization (Gtk.Dialog)
 
-		protected override void OnResponse (Gtk.ResponseType response_id)
-		{
-			if (Canceled != null)
-				Canceled (this, EventArgs.Empty);
-		}
+		var content_area = this.GetContentAreaBox ();
+		content_area.Spacing = 6;
+		content_area.SetAllMargins (2);
+		content_area.Append (textLabel);
+		content_area.Append (progressBar);
 
-		[MemberNotNull (nameof (label), nameof (progress_bar))]
-		private void Build ()
-		{
-			ContentArea.BorderWidth = 2;
-			ContentArea.Spacing = 6;
+		AddButton (Translations.GetString ("_Cancel"), (int) Gtk.ResponseType.Cancel);
 
-			label = new Label ();
-			ContentArea.Add (label);
+		OnResponse += (_, args) => Canceled?.Invoke (this, EventArgs.Empty);
+	}
 
-			progress_bar = new ProgressBar ();
-			ContentArea.Add (progress_bar);
+	public static ProgressDialog New (IChromeService chrome)
+	{
+		ProgressDialog dialog = NewWithProperties ([]);
+		dialog.TransientFor = chrome.MainWindow;
+		return dialog;
+	}
 
-			AddButton (Gtk.Stock.Cancel, Gtk.ResponseType.Cancel);
+	public new string Title {
+		get => base.GetTitle ()!;
+		set => SetTitle (value);
+	}
 
-			DefaultWidth = 400;
-			DefaultHeight = 114;
-		}
+	public string Text {
+		get => text_label.GetText ();
+		set => text_label.SetText (value);
+	}
+
+	public double Progress {
+		get => progress_bar.Fraction;
+		set => progress_bar.Fraction = value;
 	}
 }

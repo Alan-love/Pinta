@@ -1,21 +1,21 @@
 //
 // DocumentWorkspace.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,336 +25,382 @@
 // THE SOFTWARE.
 
 using System;
-using Gdk;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class DocumentWorkspace
 {
-	public class DocumentWorkspace
+	private readonly Document document;
+
+	private readonly ActionManager actions;
+
+	private enum ZoomType
 	{
-		private Document document;
-		private Size canvas_size;
-		private enum ZoomType
-		{
-			ZoomIn,
-			ZoomOut,
-			ZoomManually
+		ZoomIn,
+		ZoomOut,
+		ZoomManually,
+	}
+
+	internal DocumentWorkspace (
+		ActionManager actions,
+		Document document)
+	{
+		this.actions = actions;
+
+		this.document = document;
+
+		History = new DocumentHistory (document);
+	}
+
+	#region Public Events
+	public event EventHandler<CanvasInvalidatedEventArgs>? CanvasInvalidated;
+	public event EventHandler? ViewSizeChanged;
+	#endregion
+
+	#region Public Properties
+	public Gtk.Widget Canvas { get; set; } = null!; // NRT - This is set soon after creation
+	public Gtk.Widget CanvasWindow { get; set; } = null!; // NRT - This is set soon after creation
+
+	/// <summary>
+	/// Returns whether the zoomed image fits in the window without requiring scrolling.
+	/// </summary>
+	public bool ImageViewFitsInWindow {
+		get {
+			Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent!;
+			int window_x = view.GetAllocatedWidth ();
+			int window_y = view.GetAllocatedHeight ();
+			return ViewSize.Width <= window_x && ViewSize.Height <= window_y;
 		}
+	}
 
-		internal DocumentWorkspace (Document document)
-		{
-			this.document = document;
-			History = new DocumentHistory (document);
+	/// <summary>
+	/// Size of the zoomed image.
+	/// </summary>
+	public Size ViewSize {
+		get => view_size;
+		set {
+			if (view_size == value) return;
+			view_size = value;
+			OnViewSizeChanged ();
 		}
+	}
+	private Size view_size;
 
-		#region Public Events
-		public event EventHandler<CanvasInvalidatedEventArgs>? CanvasInvalidated;
-		public event EventHandler? CanvasSizeChanged;
-		#endregion
+	public DocumentHistory History { get; }
 
-		#region Public Properties
-		public Gtk.DrawingArea Canvas { get; set; } = null!; // NRT - This is set soon after creation
-
-		public bool CanvasFitsInWindow {
-			get {
-				Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent;
-
-				int window_x = view.Allocation.Width;
-				int window_y = view.Allocation.Height;
-
-				if (CanvasSize.Width <= window_x && CanvasSize.Height <= window_y)
-					return true;
-
-				return false;
-			}
+	/// <summary>
+	/// Returns whether the image (at 100% zoom) would fit in the window without requiring scrolling.
+	/// </summary>
+	public bool ImageFitsInWindow {
+		get {
+			Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent!;
+			int window_x = view.GetAllocatedWidth ();
+			int window_y = view.GetAllocatedHeight ();
+			return document.ImageSize.Width <= window_x && document.ImageSize.Height <= window_y;
 		}
+	}
 
-		public Size CanvasSize {
-			get { return canvas_size; }
-			set {
-				if (canvas_size.Width != value.Width || canvas_size.Height != value.Height) {
-					canvas_size = value;
-					OnCanvasSizeChanged ();
-				}
-			}
+	/// <summary>
+	/// Scale factor for the zoomed image.
+	/// </summary>
+	public double Scale {
+		get => ViewSize.Width / (double) document.ImageSize.Width;
+		set {
+			if (value == ViewSize.Width / (double) document.ImageSize.Width && value == ViewSize.Height / (double) document.ImageSize.Height)
+				return;
+
+			document.ImageSize = CoercedToPositive (document.ImageSize);
+			ViewSize = GetNewViewSize (document.ImageSize, value);
+
+			Invalidate ();
 		}
+	}
 
-		public DocumentHistory History { get; private set; }
+	/// <summary>
+	/// Ensures that the size has a width and a height of at least 1
+	/// </summary>
+	private static Size CoercedToPositive (Size baseSize)
+		=> new (
+			Width: Math.Max (baseSize.Width, 1),
+			Height: Math.Max (baseSize.Height, 1));
 
-		public bool ImageFitsInWindow {
-			get {
-				Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent;
+	private static Size GetNewViewSize (Size imageSize, double scale)
+	{
+		int new_x = Math.Max ((int) (imageSize.Width * scale), 1);
+		int new_y = Math.Max ((int) ((long) new_x * imageSize.Height / imageSize.Width), 1);
+		return new (new_x, new_y);
+	}
 
-				int window_x = view.Allocation.Width;
-				int window_y = view.Children[0].Allocation.Height;
+	#endregion
 
-				if (document.ImageSize.Width <= window_x && document.ImageSize.Height <= window_y)
-					return true;
+	#region Public Methods
+	public void Invalidate ()
+	{
+		OnCanvasInvalidated (new CanvasInvalidatedEventArgs ());
+	}
 
-				return false;
-			}
-		}
+	/// <summary>
+	/// Repaints a rectangle region on the canvas.
+	/// </summary>
+	/// <param name='canvasRect'>
+	/// The rectangle region of the canvas requiring repainting
+	/// </param>
+	public void Invalidate (RectangleI canvasRect)
+	{
+		OnCanvasInvalidated (new CanvasInvalidatedEventArgs (canvasRect));
+	}
 
-		public Cairo.PointD Offset {
-			get { return new Cairo.PointD ((Canvas.Allocation.Width - canvas_size.Width) / 2, (Canvas.Allocation.Height - canvas_size.Height) / 2); }
-		}
+	/// <summary>
+	/// Repaints a rectangle region in the window.
+	/// Note that this overload uses window coordinates, whereas Invalidate() uses canvas coordinates.
+	/// </summary>
+	public void InvalidateWindowRect (RectangleI windowRect)
+	{
+		PointD windowTopLeft = new (windowRect.Left, windowRect.Top);
+		PointD windowBtmRight = new (windowRect.Right + 1, windowRect.Bottom + 1);
 
-		public double Scale {
-			get { return (double) CanvasSize.Width / (double) document.ImageSize.Width; }
-			set {
-				if (value != (double) CanvasSize.Width / (double) document.ImageSize.Width || value != (double) CanvasSize.Height / (double) document.ImageSize.Height) {
-					if (document.ImageSize.Width == 0) {
-						document.ImageSize = new Size (1, document.ImageSize.Height);
-					}
+		PointD canvasTopLeft = ViewPointToCanvas (windowTopLeft);
+		PointD canvasBtmRight = ViewPointToCanvas (windowBtmRight);
 
-					if (document.ImageSize.Height == 0) {
-						document.ImageSize = new Size (document.ImageSize.Width, 1);
-					}
+		RectangleI canvasRect = RectangleD.FromPoints (canvasTopLeft, canvasBtmRight).ToInt ();
+		OnCanvasInvalidated (new CanvasInvalidatedEventArgs (canvasRect));
+	}
 
-					int new_x = Math.Max ((int) (document.ImageSize.Width * value), 1);
-					int new_y = Math.Max ((int) (((long) new_x * document.ImageSize.Height) / document.ImageSize.Width), 1);
+	/// <summary>
+	/// Grabs focus to the canvas widget. This can be used to avoid leaving focus in
+	/// toolbar widgets, for example.
+	/// </summary>
+	public void GrabFocusToCanvas ()
+	{
+		bool gained_focus = CanvasWindow.GrabFocus ();
+		// Log a warning if something went wrong, e.g. there is a non-focusable widget
+		// in the hierarchy.
+		if (!gained_focus)
+			Console.Error.WriteLine ("Failed to gain focus on the canvas widget!");
+	}
 
-					CanvasSize = new Gdk.Size (new_x, new_y);
-					Invalidate ();
+	/// <summary>
+	/// Determines whether the rectangle lies (at least partially) outside the canvas area.
+	/// </summary>
+	public bool IsPartiallyOffscreen (RectangleI rect)
+		=> rect.IsEmpty || rect.Left < 0 || rect.Top < 0;
 
-					if (PintaCore.Tools.CurrentTool?.CursorChangesOnZoom == true) {
-						//The current tool's cursor changes when the zoom changes.
-						PintaCore.Tools.CurrentTool.SetCursor (PintaCore.Tools.CurrentTool.DefaultCursor);
-					}
-				}
-			}
-		}
+	public bool PointInCanvas (PointD point)
+	{
+		if (point.X < 0 || point.Y < 0)
+			return false;
 
-		#endregion
+		if (point.X >= document.ImageSize.Width || point.Y >= document.ImageSize.Height)
+			return false;
 
-		#region Public Methods
-		public void Invalidate ()
-		{
-			OnCanvasInvalidated (new CanvasInvalidatedEventArgs ());
-		}
+		return true;
+	}
 
-		/// <summary>
-		/// Repaints a rectangle region on the canvas.
-		/// </summary>
-		/// <param name='canvasRect'>
-		/// The rectangle region of the canvas requiring repainting
-		/// </param>
-		public void Invalidate (Gdk.Rectangle canvasRect)
-		{
-			Cairo.PointD canvasTopLeft = new Cairo.PointD (canvasRect.Left, canvasRect.Top);
-			Cairo.PointD canvasBtmRight = new Cairo.PointD (canvasRect.Right + 1, canvasRect.Bottom + 1);
+	public void RecenterView (PointD point)
+	{
+		Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent!;
 
-			Cairo.PointD winTopLeft = CanvasPointToWindow (canvasTopLeft.X, canvasTopLeft.Y);
-			Cairo.PointD winBtmRight = CanvasPointToWindow (canvasBtmRight.X, canvasBtmRight.Y);
+		var h_adjust = view.GetHadjustment ()!;
+		h_adjust.Value = Math.Clamp (point.X * Scale - h_adjust.PageSize / 2, h_adjust.Lower, h_adjust.Upper);
 
-			Gdk.Rectangle winRect = Utility.PointsToRectangle (winTopLeft, winBtmRight, false).ToGdkRectangle ();
+		var v_adjust = view.GetVadjustment ()!;
+		v_adjust.Value = Math.Clamp (point.Y * Scale - v_adjust.PageSize / 2, v_adjust.Lower, v_adjust.Upper);
+	}
 
-			OnCanvasInvalidated (new CanvasInvalidatedEventArgs (winRect));
-		}
+	public void ScrollCanvas (PointI delta)
+	{
+		Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent!;
 
-		/// <summary>
-		/// Determines whether the rectangle lies (at least partially) outside the canvas area.
-		/// </summary>
-		public bool IsPartiallyOffscreen (Gdk.Rectangle rect)
-		{
-			return (rect.IsEmpty || rect.Left < 0 || rect.Top < 0);
-		}
+		var h_adjust = view.GetHadjustment ()!;
+		h_adjust.Value = Math.Clamp (delta.X + h_adjust.Value, h_adjust.Lower, h_adjust.Upper - h_adjust.PageSize);
 
-		public bool PointInCanvas (Cairo.PointD point)
-		{
-			if (point.X < 0 || point.Y < 0)
-				return false;
+		var v_adjust = view.GetVadjustment ()!;
+		v_adjust.Value = Math.Clamp (delta.Y + v_adjust.Value, v_adjust.Lower, v_adjust.Upper - v_adjust.PageSize);
+	}
 
-			if (point.X >= document.ImageSize.Width || point.Y >= document.ImageSize.Height)
-				return false;
+	/// <summary>
+	/// Converts a point from image view coordinates to canvas coordinates
+	/// </summary>
+	/// <param name='x'>
+	/// The X coordinate of the view point
+	/// </param>
+	/// <param name='y'>
+	/// The Y coordinate of the view point
+	/// </param>
+	public PointD ViewPointToCanvas (PointD viewPoint)
+	{
+		Fraction<int> sf = ScaleFactor.CreateClamped (document.ImageSize.Width, ViewSize.Width);
+		PointD pt = sf.ScalePoint (viewPoint);
+		return new (pt.X, pt.Y);
+	}
 
-			return true;
-		}
+	/// <summary>
+	/// Converts a point from canvas coordinates to view coordinates
+	/// </summary>
+	public PointD CanvasPointToView (PointD canvasPoint)
+	{
+		Fraction<int> sf = ScaleFactor.CreateClamped (document.ImageSize.Width, ViewSize.Width);
+		return sf.UnscalePoint (canvasPoint);
+	}
 
-		public void RecenterView (double x, double y)
-		{
-			Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent;
+	public void ZoomIn ()
+	{
+		ZoomAroundCenter (ZoomType.ZoomIn);
+	}
 
-			view.Hadjustment.Value = Utility.Clamp (x * Scale - view.Hadjustment.PageSize / 2, view.Hadjustment.Lower, view.Hadjustment.Upper);
-			view.Vadjustment.Value = Utility.Clamp (y * Scale - view.Vadjustment.PageSize / 2, view.Vadjustment.Lower, view.Vadjustment.Upper);
-		}
+	public void ZoomOut ()
+	{
+		ZoomAroundCenter (ZoomType.ZoomOut);
+	}
 
-		public void ScrollCanvas (int dx, int dy)
-		{
-			Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent;
+	public void ZoomInAroundViewPoint (in PointD view_point)
+	{
+		ZoomAndRecenterView (ZoomType.ZoomIn, view_point); // Zoom in relative to mouse position.
+	}
 
-			view.Hadjustment.Value = Utility.Clamp (dx + view.Hadjustment.Value, view.Hadjustment.Lower, view.Hadjustment.Upper - view.Hadjustment.PageSize);
-			view.Vadjustment.Value = Utility.Clamp (dy + view.Vadjustment.Value, view.Vadjustment.Lower, view.Vadjustment.Upper - view.Vadjustment.PageSize);
-		}
+	public void ZoomInAroundCanvasPoint (in PointD canvas_point)
+	{
+		ZoomInAroundViewPoint (CanvasPointToView (canvas_point));
+	}
 
-		/// <summary>
-		/// Converts a point from window coordinates to canvas coordinates
-		/// </summary>
-		/// <param name='x'>
-		/// The X coordinate of the window point
-		/// </param>
-		/// <param name='y'>
-		/// The Y coordinate of the window point
-		/// </param>
-		public Cairo.PointD WindowPointToCanvas (double x, double y)
-		{
-			ScaleFactor sf = new ScaleFactor (PintaCore.Workspace.ImageSize.Width,
-							  PintaCore.Workspace.CanvasSize.Width);
-			Cairo.PointD pt = sf.ScalePoint (new Cairo.PointD (x - Offset.X, y - Offset.Y));
-			return new Cairo.PointD (pt.X, pt.Y);
-		}
+	public void ZoomOutAroundViewPoint (in PointD view_point)
+	{
+		ZoomAndRecenterView (ZoomType.ZoomOut, view_point); // Zoom out relative to mouse position.
+	}
 
-		/// <summary>
-		/// Converts a point from canvas coordinates to window coordinates
-		/// </summary>
-		/// <param name='x'>
-		/// The X coordinate of the canvas point
-		/// </param>
-		/// <param name='y'>
-		/// The Y coordinate of the canvas point
-		/// </param>
-		public Cairo.PointD CanvasPointToWindow (double x, double y)
-		{
-			ScaleFactor sf = new ScaleFactor (PintaCore.Workspace.ImageSize.Width,
-							  PintaCore.Workspace.CanvasSize.Width);
-			Cairo.PointD pt = sf.UnscalePoint (new Cairo.PointD (x, y));
-			return new Cairo.PointD (pt.X + Offset.X, pt.Y + Offset.Y);
-		}
+	public void ZoomOutAroundCanvasPoint (in PointD canvas_point)
+	{
+		ZoomOutAroundViewPoint (CanvasPointToView (canvas_point));
+	}
 
-		public void ZoomIn ()
-		{
-			ZoomAndRecenterView (ZoomType.ZoomIn, new Cairo.PointD (-1, -1)); // Zoom in relative to the center of the viewport.
-		}
+	public void ZoomManually ()
+	{
+		ZoomAroundCenter (ZoomType.ZoomManually);
+	}
 
-		public void ZoomOut ()
-		{
-			ZoomAndRecenterView (ZoomType.ZoomOut, new Cairo.PointD (-1, -1)); // Zoom out relative to the center of the viewport.
-		}
+	public void ZoomToCanvasRectangle (RectangleD rect)
+	{
+		double ratio =
+			(document.ImageSize.Width / rect.Width <= document.ImageSize.Height / rect.Height)
+			? document.ImageSize.Width / rect.Width
+			: document.ImageSize.Height / rect.Height;
 
-		public void ZoomInFromMouseScroll (Cairo.PointD point)
-		{
-			ZoomAndRecenterView (ZoomType.ZoomIn, point); // Zoom in relative to mouse position.
-		}
+		actions.View.ZoomComboBox.ComboBox.GetEntry ().SetText (ViewActions.ToPercent (ratio));
+		GLib.MainContext.Default ().Iteration (false); //Force update of scrollbar upper before recenter
 
-		public void ZoomOutFromMouseScroll (Cairo.PointD point)
-		{
-			ZoomAndRecenterView (ZoomType.ZoomOut, point); // Zoom out relative to mouse position.
-		}
+		PointD newPoint = new (
+			X: rect.X + rect.Width / 2,
+			Y: rect.Y + rect.Height / 2);
 
-		public void ZoomManually ()
-		{
-			ZoomAndRecenterView (ZoomType.ZoomManually, new Cairo.PointD (-1, -1));
-		}
+		RecenterView (newPoint);
+	}
+	#endregion
 
-		public void ZoomToRectangle (Cairo.Rectangle rect)
-		{
-			double ratio;
+	#region Private Methods
+	private void OnCanvasInvalidated (CanvasInvalidatedEventArgs e)
+	{
+		CanvasInvalidated?.Invoke (this, e);
+	}
 
-			if (document.ImageSize.Width / rect.Width <= document.ImageSize.Height / rect.Height)
-				ratio = document.ImageSize.Width / rect.Width;
-			else
-				ratio = document.ImageSize.Height / rect.Height;
+	public void OnViewSizeChanged ()
+	{
+		ViewSizeChanged?.Invoke (this, EventArgs.Empty);
+	}
 
-			PintaCore.Actions.View.ZoomComboBox.ComboBox.Entry.Text = ViewActions.ToPercent (ratio);
-			Gtk.Main.Iteration (); //Force update of scrollbar upper before recenter
-			RecenterView (rect.X + rect.Width / 2, rect.Y + rect.Height / 2);
-		}
-		#endregion
+	/// <summary>
+	/// Zoom in/out around the center of the screen.
+	/// </summary>
+	private void ZoomAroundCenter (ZoomType zoomType)
+	{
+		Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent!;
+		PointD center = new (
+			view.Hadjustment!.Value + (view.Hadjustment.PageSize / 2.0),
+			view.Vadjustment!.Value + (view.Vadjustment.PageSize / 2.0));
+		ZoomAndRecenterView (zoomType, center);
+	}
 
-		#region Private Methods
-		protected internal void OnCanvasInvalidated (CanvasInvalidatedEventArgs e)
-		{
-			if (CanvasInvalidated != null)
-				CanvasInvalidated (this, e);
-		}
+	/// <summary>
+	/// Zoom in/out around a specific point.
+	/// </summary>
+	/// <param name="center_point">Center point to zoom around, in view coordinates</param>
+	private void ZoomAndRecenterView (ZoomType zoomType, PointD center_point)
+	{
+		if (zoomType == ZoomType.ZoomOut && (ViewSize.Width == 1 || ViewSize.Height == 1))
+			return; //Can't zoom in past a 1x1 px canvas
 
-		public void OnCanvasSizeChanged ()
-		{
-			if (CanvasSizeChanged != null)
-				CanvasSizeChanged (this, EventArgs.Empty);
-		}
+		if (!ViewActions.TryParsePercent (actions.View.ZoomComboBox.ComboBox.GetActiveText ()!, out var zoom))
+			zoom = Scale * 100;
 
-		private void ZoomAndRecenterView (ZoomType zoomType, Cairo.PointD point)
-		{
-			if (zoomType == ZoomType.ZoomOut && (CanvasSize.Width == 1 || CanvasSize.Height == 1))
-				return; //Can't zoom in past a 1x1 px canvas
+		zoom = Math.Min (zoom, 3600);
 
-			double zoom;
+		actions.View.SuspendZoomUpdate ();
 
-			if (!ViewActions.TryParsePercent (PintaCore.Actions.View.ZoomComboBox.ComboBox.ActiveText, out zoom))
-				zoom = Scale * 100;
+		Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent!;
 
-			zoom = Math.Min (zoom, 3600);
+		double scroll_offset_x = center_point.X - view.Hadjustment!.Value;
+		double scroll_offset_y = center_point.Y - view.Vadjustment!.Value;
 
-			if (Canvas.Window != null)
-				Canvas.Window.FreezeUpdates ();
+		PointD canvas_point = ViewPointToCanvas (center_point);
 
-			PintaCore.Actions.View.SuspendZoomUpdate ();
+		if (zoomType == ZoomType.ZoomIn || zoomType == ZoomType.ZoomOut) {
 
-			Gtk.Viewport view = (Gtk.Viewport) Canvas.Parent;
+			int i = 0;
 
-			bool adjustOnMousePosition = point.X >= 0.0 && point.Y >= 0.0;
-
-			double center_x = adjustOnMousePosition ?
-				point.X : view.Hadjustment.Value + (view.Hadjustment.PageSize / 2.0);
-			double center_y = adjustOnMousePosition ?
-				point.Y : view.Vadjustment.Value + (view.Vadjustment.PageSize / 2.0);
-
-			center_x = (center_x - Offset.X) / Scale;
-			center_y = (center_y - Offset.Y) / Scale;
-
-			if (zoomType == ZoomType.ZoomIn || zoomType == ZoomType.ZoomOut) {
-				int i = 0;
-
-				Predicate<string> UpdateZoomLevel = zoomInList => {
-					double zoom_level;
-					if (!ViewActions.TryParsePercent (zoomInList, out zoom_level))
-						return false;
-
-					switch (zoomType) {
-						case ZoomType.ZoomIn:
-							if (zoomInList == Translations.GetString ("Window") || zoom_level <= zoom) {
-								PintaCore.Actions.View.ZoomComboBox.ComboBox.Active = i - 1;
-								return true;
-							}
-
-							break;
-
-						case ZoomType.ZoomOut:
-							if (zoomInList == Translations.GetString ("Window"))
-								return true;
-
-							if (zoom_level < zoom) {
-								PintaCore.Actions.View.ZoomComboBox.ComboBox.Active = i;
-								return true;
-							}
-
-							break;
-					}
-
+			bool UpdateZoomLevel (string zoomInList)
+			{
+				if (!ViewActions.TryParsePercent (zoomInList, out var zoom_level))
 					return false;
-				};
 
-				foreach (string item in PintaCore.Actions.View.ZoomCollection) {
-					if (UpdateZoomLevel (item))
+				switch (zoomType) {
+					case ZoomType.ZoomIn:
+
+						if (zoomInList == Translations.GetString ("Window") || zoom_level <= zoom) {
+							actions.View.ZoomComboBox.ComboBox.Active = i - 1;
+							return true;
+						}
+
 						break;
 
-					i++;
+					case ZoomType.ZoomOut:
+
+						if (zoomInList == Translations.GetString ("Window"))
+							return true;
+
+						if (zoom_level < zoom) {
+							actions.View.ZoomComboBox.ComboBox.Active = i;
+							return true;
+						}
+
+						break;
 				}
+				return false;
 			}
 
-			PintaCore.Actions.View.UpdateCanvasScale ();
+			foreach (string item in actions.View.ZoomCollection) {
 
-			// Quick fix : need to manually update Upper limit because the value is not changing after updating the canvas scale.
-			// TODO : I think there is an event need to be fired so that those values updated automatically.
-			view.Hadjustment.Upper = CanvasSize.Width < view.Hadjustment.PageSize ? view.Hadjustment.PageSize : CanvasSize.Width;
-			view.Vadjustment.Upper = CanvasSize.Height < view.Vadjustment.PageSize ? view.Vadjustment.PageSize : CanvasSize.Height;
+				if (UpdateZoomLevel (item))
+					break;
 
-			RecenterView (center_x, center_y);
-
-			PintaCore.Actions.View.ResumeZoomUpdate ();
-			if (Canvas.Window != null)
-				Canvas.Window.ThawUpdates ();
+				i++;
+			}
 		}
-		#endregion
+
+		actions.View.UpdateCanvasScale ();
+
+		// Quick fix : need to manually update Upper limit because the value is not changing after updating the canvas scale.
+		// TODO : I think there is an event need to be fired so that those values updated automatically.
+		view.Hadjustment!.Upper = ViewSize.Width < view.Hadjustment.PageSize ? view.Hadjustment.PageSize : ViewSize.Width;
+		view.Vadjustment!.Upper = ViewSize.Height < view.Vadjustment.PageSize ? view.Vadjustment.PageSize : ViewSize.Height;
+
+		// Scroll so that the canvas position under 'center_point' is still the same after zooming.
+		// Note that the canvas widget might not have resized yet, so using Offset is important for taking
+		// the size difference into account.
+		PointD new_center_point = CanvasPointToView (canvas_point);
+		view.Hadjustment.Value = new_center_point.X - scroll_offset_x;
+		view.Vadjustment.Value = new_center_point.Y - scroll_offset_y;
+
+		actions.View.ResumeZoomUpdate ();
 	}
+
+	#endregion
 }

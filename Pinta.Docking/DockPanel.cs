@@ -1,19 +1,19 @@
-//  
+//
 // Author:
 //       Cameron White <cameronwhite91@gmail.com>
-// 
+//
 // Copyright (c) 2020 Cameron White
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,90 +22,150 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using Gtk;
+using Pinta.Core;
 
-namespace Pinta.Docking
+namespace Pinta.Docking;
+
+[GObject.Subclass<Gtk.Box>]
+public sealed partial class DockPanel
 {
-	public class DockPanel : HBox
+	internal sealed class DockPanelItem
 	{
-		private class DockPanelItem
+		public DockItem Item { get; }
+		public Gtk.Paned Pane { get; }
+		public Gtk.ToggleButton ReopenButton { get; }
+		private readonly Gtk.Popover popover;
+		public DockPanelItem (DockItem item)
 		{
-			public DockPanelItem (DockItem item)
-			{
-				Item = item;
-				Pane = new Paned (Orientation.Vertical);
-				ReopenButton = new Button (new Label (item.Label) { Angle = 270 });
+			Gtk.Paned pane = Gtk.Paned.New (Gtk.Orientation.Vertical);
 
-				popover = new Popover (ReopenButton);
-				popover.Position = PositionType.Left;
+			Gtk.Image icon = Gtk.Image.NewFromIconName (item.IconName);
 
-				ReopenButton.Clicked += (o, args) => {
-					popover.ShowAll ();
-					popover.Popup ();
-				};
-			}
+			Gtk.ToggleButton reopenButton = Gtk.ToggleButton.New ();
+			reopenButton.TooltipText = item.Label;
+			reopenButton.SetChild (icon);
+			reopenButton.OnToggled += ReopenButton_OnToggled;
 
-			public DockItem Item { get; private set; }
-			public Paned Pane { get; private set; }
-			public Button ReopenButton { get; private set; }
-			private Popover popover;
+			// Autohide is set to false since it seems to cause the popover to close even when clicking inside it, on macOS at least
+			// Instead, the reopen button is a toggle button to close the popover.
+			Gtk.Popover popover = Gtk.Popover.New ();
+			popover.Autohide = false;
+			popover.Position = Gtk.PositionType.Left;
+			popover.SetParent (reopenButton);
 
-			public void Maximize (Box dock_bar)
-			{
-				dock_bar.Remove (ReopenButton);
-				popover.Hide ();
-				if (popover.Child != null)
-					popover.Remove (Item);
+			// --- References to keep
 
-				Pane.Pack1 (Item, resize: false, shrink: false);
-			}
-
-			public void Minimize (Box dock_bar)
-			{
-				Pane.Remove (Item);
-				popover.Add (Item);
-
-				dock_bar.PackStart (ReopenButton, false, false, 0);
-				ReopenButton.ShowAll ();
-			}
+			this.popover = popover;
+			Pane = pane;
+			ReopenButton = reopenButton;
+			Item = item;
 		}
 
-		/// <summary>
-		/// Contains the buttons to re-open any minimized dock items.
-		/// </summary>
-		private VBox dock_bar = new VBox ();
-
-		/// <summary>
-		/// List of the items in this panel, which may be minimized or maximized.
-		/// </summary>
-		private List<DockPanelItem> items = new List<DockPanelItem> ();
-
-		public DockPanel ()
+		private void ReopenButton_OnToggled (Gtk.ToggleButton _, EventArgs __)
 		{
-			PackEnd (dock_bar, false, false, 0);
-		}
-
-		public void AddItem (DockItem item)
-		{
-			var panel_item = new DockPanelItem (item);
-
-			// Connect to the previous pane in the list.
-			if (items.Count > 0)
-				items.Last ().Pane.Add2 (panel_item.Pane);
+			if (ReopenButton.Active)
+				popover.Popup ();
 			else
-				PackStart (panel_item.Pane, true, true, 0);
+				popover.Popdown ();
+		}
 
-			items.Add (panel_item);
-			panel_item.Maximize (dock_bar);
+		public bool IsMinimized
+			=> popover.Child is not null;
 
-			item.Minimized += (o, args) => {
-				panel_item.Minimize (dock_bar);
-			};
-			item.Maximized += (o, args) => {
-				panel_item.Maximize (dock_bar);
-			};
+		public void UpdateOnMaximize (Gtk.Box dockBar)
+		{
+			// Remove the reopen button from the dock bar.
+			// Note that it might not already be in the dock bar, e.g. on startup.
+			dockBar.RemoveIfChild (ReopenButton);
+
+			popover.Popdown ();
+			popover.Child = null;
+
+			Pane.StartChild = Item;
+			Pane.ResizeStartChild = true;
+			Pane.ShrinkStartChild = false;
+		}
+
+		public void UpdateOnMinimize (Gtk.Box dock_bar)
+		{
+			Pane.StartChild = null;
+			popover.Child = Item;
+
+			dock_bar.Append (ReopenButton);
+			ReopenButton.Active = false;
+		}
+	}
+
+	/// <summary>
+	/// Contains the buttons to re-open any minimized dock items.
+	/// </summary>
+	private readonly Gtk.Box dock_bar = Gtk.Box.New (Gtk.Orientation.Vertical, 0);
+
+	/// <summary>
+	/// List of the items in this panel, which may be minimized or maximized.
+	/// </summary>
+	private readonly List<DockPanelItem> items = [];
+
+	partial void Initialize ()
+	{
+		SetOrientation (Gtk.Orientation.Horizontal);
+		Append (dock_bar);
+	}
+
+	public static DockPanel New () => NewWithProperties ([]);
+
+	public void AddItem (DockItem item)
+	{
+		DockPanelItem panelItem = new (item);
+
+		// Connect to the previous pane in the list.
+		if (items.Count > 0) {
+			Gtk.Paned pane = items.Last ().Pane;
+			pane.EndChild = panelItem.Pane;
+		} else {
+			panelItem.Pane.Hexpand = true;
+			panelItem.Pane.Halign = Gtk.Align.Fill;
+			Prepend (panelItem.Pane);
+		}
+
+		items.Add (panelItem);
+		panelItem.UpdateOnMaximize (dock_bar);
+
+		item.MinimizeClicked += (_, _) => {
+			panelItem.UpdateOnMinimize (dock_bar);
+
+			int index = items.IndexOf (panelItem);
+			if (index > 0)
+				items[index - 1].Pane.PositionSet = false;
+		};
+		item.MaximizeClicked += (_, _) => panelItem.UpdateOnMaximize (dock_bar);
+	}
+
+	public void SaveSettings (ISettingsService settings)
+	{
+		foreach (var panel_item in items) {
+			settings.PutSetting (SettingNames.MinimizeKey (panel_item), panel_item.IsMinimized);
+#if false
+			settings.PutSetting (SplitPosKey (panel_item), panel_item.Pane.Position);
+#endif
+		}
+	}
+
+	public void LoadSettings (ISettingsService settings)
+	{
+		foreach (var panel_item in items) {
+
+			if (settings.GetSetting<bool> (SettingNames.MinimizeKey (panel_item), false)) {
+				panel_item.Item.Minimize ();
+			}
+
+#if false
+			panel_item.Pane.Position = settings.GetSetting<int> (
+				SplitPosKey (panel_item), panel_item.Pane.Position);
+#endif
 		}
 	}
 }

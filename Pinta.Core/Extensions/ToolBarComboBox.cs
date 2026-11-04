@@ -1,21 +1,21 @@
 //
 // ToolBarComboBox.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,35 +25,72 @@
 // THE SOFTWARE.
 
 using System;
-using Gtk;
+using System.Collections.Generic;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+[GObject.Subclass<Gtk.Box>]
+public sealed partial class ToolBarComboBox
 {
-	public class ToolBarComboBox : ToolItem
+	public Gtk.ComboBoxText ComboBox { get; private set; } = null!; // NRT - set in factory method
+
+	public static ToolBarComboBox New (int width, int activeIndex, bool allowEntry)
+		=> New (width, activeIndex, allowEntry, []);
+
+	public static ToolBarComboBox New (int width, int activeIndex, bool allowEntry, params string[] contents)
+		=> New (width, activeIndex, allowEntry, (IEnumerable<string>) contents);
+
+	public static ToolBarComboBox New (int width, int activeIndex, bool allowEntry, IEnumerable<string> contents)
 	{
-		public ComboBoxText ComboBox { get; private set; }
+		Gtk.ComboBoxText comboBox =
+			allowEntry
+			? Gtk.ComboBoxText.NewWithEntry ()
+			: Gtk.ComboBoxText.New ();
 
-		public ToolBarComboBox (int width, int activeIndex, bool allowEntry, params string[] contents)
-		{
-			if (allowEntry)
-				ComboBox = ComboBoxText.NewWithEntry ();
-			else
-				ComboBox = new ComboBoxText ();
+		comboBox.CanFocus = allowEntry;
 
+		foreach (string entry in contents)
+			comboBox.AppendText (entry);
 
-			foreach (string entry in contents)
-				ComboBox.AppendText (entry);
+		comboBox.WidthRequest = width;
 
-			ComboBox.AddEvents ((int) Gdk.EventMask.ButtonPressMask);
-			ComboBox.WidthRequest = width;
+		if (activeIndex >= 0)
+			comboBox.Active = activeIndex;
 
-			if (activeIndex >= 0)
-				ComboBox.Active = activeIndex;
+		comboBox.OnChanged += OnComboBoxChanged;
 
-			ComboBox.Show ();
+		ToolBarComboBox widget = NewWithProperties ([]);
+		widget.Append (comboBox);
+		widget.ComboBox = comboBox;
+		return widget;
+	}
 
-			Add (ComboBox);
-			Show ();
+	partial void Initialize ()
+	{
+		Hexpand = false;
+		SetOrientation (Gtk.Orientation.Horizontal);
+		Spacing = 0;
+
+		// The combobox is inserted by the factory methods.
+		// TODO - replace deprecated Gtk.ComboBox with a wrapper around Gtk.Dropdown,
+		// and create a separate class for editable dropdowns.
+	}
+
+	private static void OnComboBoxChanged (Gtk.ComboBox comboBox, EventArgs __)
+	{
+		// Return focus to the canvas after selecting a combobox item, which normally focuses the entry widget.
+		// We don't want this if the user is actually typing in the entry, of course.
+
+		if (!comboBox.HasEntry)
+			return;
+
+		if (!comboBox.GetEntry ().IsEditingText ()) {
+			GLib.Functions.IdleAdd (0, () => {
+				if (PintaCore.Workspace.HasOpenDocuments)
+					PintaCore.Workspace.ActiveWorkspace.GrabFocusToCanvas ();
+
+				return false;
+			});
 		}
 	}
 }

@@ -8,72 +8,63 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class MedianEffect : BaseEffect
 {
-	public class MedianEffect : LocalHistogramEffect
+	public override string Icon => Resources.Icons.EffectsNoiseMedian;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Name => Translations.GetString ("Median");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Noise");
+
+	public MedianData Data => (MedianData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public MedianEffect (IServiceProvider services)
 	{
-		private int radius;
-		private int percentile;
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new MedianData ();
+	}
 
-		public override string Icon {
-			get { return "Menu.Effects.Noise.Median.png"; }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override string Name {
-			get { return Translations.GetString ("Median"); }
-		}
+	// Algorithm Code Ported From PDN
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
+	{
+		int radius = Data.Radius;
+		int percentile = Data.Percentile;
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+		LocalHistogram.RenderRect (Apply, radius, source, destination, roi);
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Noise"); }
-		}
+		// === Methods ===
 
-		public MedianData Data { get { return (MedianData) EffectData!; } } // NRT - Set in constructor
+		ColorBgra Apply (ColorBgra src, int area, Span<int> hb, Span<int> hg, Span<int> hr, Span<int> ha)
+			=> LocalHistogram.GetPercentile (percentile, area, hb, hg, hr, ha);
+	}
 
-		public MedianEffect ()
-		{
-			EffectData = new MedianData ();
-		}
+	public sealed class MedianData : EffectData
+	{
+		[Caption ("Radius")]
+		[MinimumValue (1), MaximumValue (200)]
+		public int Radius { get; set; } = 10;
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
+		[Caption ("Percentile")]
+		[MinimumValue (0), MaximumValue (100)]
+		public int Percentile { get; set; } = 50;
 
-		#region Algorithm Code Ported From PDN
-		public unsafe override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			this.radius = Data.Radius;
-			this.percentile = Data.Percentile;
-
-			foreach (Gdk.Rectangle rect in rois)
-				RenderRect (this.radius, src, dest, rect);
-		}
-
-		public unsafe override ColorBgra Apply (ColorBgra src, int area, int* hb, int* hg, int* hr, int* ha)
-		{
-			ColorBgra c = GetPercentile (this.percentile, area, hb, hg, hr, ha);
-			return c;
-		}
-		#endregion
-
-		public class MedianData : EffectData
-		{
-			[Caption ("Radius"), MinimumValue (1), MaximumValue (200)]
-			public int Radius = 10;
-
-			[Caption ("Percentile"), MinimumValue (0), MaximumValue (100)]
-			public int Percentile = 50;
-
-			[Skip]
-			public override bool IsDefault { get { return Radius == 0; } }
-		}
+		[Skip]
+		public override bool IsDefault => Radius == 0;
 	}
 }

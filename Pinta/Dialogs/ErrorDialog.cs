@@ -25,101 +25,57 @@
 // THE SOFTWARE.
 
 using System;
-using System.Diagnostics.CodeAnalysis;
-using Gtk;
+using System.Threading.Tasks;
 using Pinta.Core;
 
-namespace Pinta
+namespace Pinta;
+
+internal static class ErrorDialog
 {
-	public class ErrorDialog : Gtk.Dialog
+	internal static async Task ShowMessage (
+		Gtk.Window parent,
+		string message,
+		string body)
 	{
-		private Label description_label;
-		private Expander expander;
-		private TextView details_text;
-		private Button bug_report_button;
+		Console.Error.WriteLine ("Pinta: {0}\n{1}", message, body);
 
-		public ErrorDialog (Window parent) : base ("Pinta", parent, DialogFlags.Modal | DialogFlags.DestroyWithParent)
-		{
-			Build ();
+		using Adw.MessageDialog dialog = Adw.MessageDialog.New (parent, message, body);
 
-			expander.Activated += (sender, e) => {
-				GLib.Timeout.Add (100, new GLib.TimeoutHandler (UpdateSize));
-			};
+		dialog.AddResponse (nameof (ErrorDialogResponse.OK), Translations.GetString ("_OK"));
+		dialog.DefaultResponse = nameof (ErrorDialogResponse.OK);
+		dialog.CloseResponse = nameof (ErrorDialogResponse.OK);
 
-			bug_report_button.Clicked += (sender, e) => {
-				PintaCore.Actions.Help.Bugs.Activate ();
-			};
+		await dialog.RunAsync ();
+	}
 
-			TransientFor = parent;
+	internal static async Task<ErrorDialogResponse> ShowError (
+		Gtk.Window parent,
+		string message,
+		string body,
+		string details)
+	{
+		Console.Error.WriteLine ("Pinta: {0}\n{1}", message, details);
 
-			expander.Visible = false;
-			DefaultResponse = ResponseType.Ok;
-		}
+		using Gtk.TextView text_view = Gtk.TextView.New ();
+		text_view.Buffer!.SetText (details, -1);
 
-		public void SetMessage (string message)
-		{
-			description_label.Markup = message;
-		}
+		using Gtk.ScrolledWindow scroll = Gtk.ScrolledWindow.New ();
+		scroll.HeightRequest = 250;
+		scroll.SetChild (text_view);
 
-		public void AddDetails (string text)
-		{
-			TextIter it = details_text.Buffer.EndIter;
-			details_text.Buffer.Insert (ref it, text);
-			expander.Visible = true;
-		}
+		using Gtk.Expander expander = Gtk.Expander.New (Translations.GetString ("Details"));
+		expander.SetChild (scroll);
 
-		private bool UpdateSize ()
-		{
-			int w, h;
-			GetSize (out w, out h);
-			Resize (w, 1);
-			return false;
-		}
+		using Adw.MessageDialog dialog = Adw.MessageDialog.New (parent, message, body);
+		dialog.SetExtraChild (expander);
+		dialog.AddResponse (nameof (ErrorDialogResponse.Bug), Translations.GetString ("Report Bug..."));
+		dialog.SetResponseAppearance (nameof (ErrorDialogResponse.Bug), Adw.ResponseAppearance.Suggested);
+		dialog.AddResponse (nameof (ErrorDialogResponse.OK), Translations.GetString ("_OK"));
+		dialog.DefaultResponse = nameof (ErrorDialogResponse.OK);
+		dialog.CloseResponse = nameof (ErrorDialogResponse.OK);
 
-		[MemberNotNull (nameof (expander), nameof (bug_report_button), nameof (description_label), nameof (details_text))]
-		private void Build ()
-		{
-			var hbox = new HBox ();
-			hbox.Spacing = 6;
-			hbox.BorderWidth = 12;
+		string responseText = await dialog.RunAsync ();
 
-			var error_icon = new Image ();
-			error_icon.Pixbuf = Gtk.IconTheme.Default.LoadIcon (Resources.StandardIcons.DialogError, 32);
-			error_icon.Yalign = 0;
-			hbox.PackStart (error_icon, false, false, 0);
-
-			var vbox = new VBox ();
-			vbox.Spacing = 6;
-
-			description_label = new Label ();
-			description_label.Wrap = true;
-			description_label.Xalign = 0;
-			vbox.PackStart (description_label, false, false, 0);
-
-			expander = new Expander (Translations.GetString ("Details"));
-			details_text = new TextView ();
-			var scroll = new ScrolledWindow ();
-			scroll.Add (details_text);
-			scroll.HeightRequest = 250;
-			expander.Add (scroll);
-			vbox.Add (expander);
-
-			hbox.Add (vbox);
-			this.ContentArea.Add (hbox);
-
-			bug_report_button = new Button (Translations.GetString ("Report Bug...."));
-			bug_report_button.CanFocus = false;
-			AddActionWidget (bug_report_button, ResponseType.Help);
-
-			var ok_button = new Button (Gtk.Stock.Ok);
-			ok_button.CanDefault = true;
-			AddActionWidget (ok_button, ResponseType.Ok);
-
-			DefaultWidth = 600;
-			DefaultHeight = 142;
-
-			ShowAll ();
-		}
+		return Enum.Parse<ErrorDialogResponse> (responseText);
 	}
 }
-

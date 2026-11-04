@@ -8,80 +8,80 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Effects;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class GlowEffect : BaseEffect
 {
-	public class GlowEffect : BaseEffect
+	private readonly UserBlendOps.ScreenBlendOp screen_blend_op;
+	private readonly IServiceProvider services;
+
+	public override string Icon => Resources.Icons.EffectsPhotoGlow;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Name => Translations.GetString ("Glow");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Photo");
+
+	public GlowData Data => (GlowData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public GlowEffect (IServiceProvider services)
 	{
-		private GaussianBlurEffect blurEffect;
-		private BrightnessContrastEffect contrastEffect;
-		private UserBlendOps.ScreenBlendOp screenBlendOp;
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new GlowData ();
+		screen_blend_op = new UserBlendOps.ScreenBlendOp ();
+		this.services = services;
+	}
 
-		public override string Icon {
-			get { return "Menu.Effects.Photo.Glow.png"; }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override string Name {
-			get { return Translations.GetString ("Glow"); }
-		}
+	#region Algorithm Code Ported From PDN
+	public override void Render (ImageSurface src, ImageSurface dest, ReadOnlySpan<RectangleI> rois)
+	{
+		GaussianBlurEffect blurEffect = new (services);
+		blurEffect.Data.Radius = Data.Radius;
+		blurEffect.Render (src, dest, rois);
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+		BrightnessContrastPixelOp contrastOp = new (brightness: Data.Brightness, contrast: Data.Contrast);
+		contrastOp.Apply (dest, dest, rois);
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Photo"); }
-		}
+		var dst_data = dest.GetPixelData ();
+		var src_data = src.GetReadOnlyPixelData ();
+		int src_width = src.Width;
+		int dst_width = dest.Width;
 
-		public GlowData Data { get { return (GlowData) EffectData!; } } // NRT - Set in constructor
-
-		public GlowEffect ()
-		{
-			EffectData = new GlowData ();
-
-			blurEffect = new GaussianBlurEffect ();
-			contrastEffect = new BrightnessContrastEffect ();
-			screenBlendOp = new UserBlendOps.ScreenBlendOp ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		#region Algorithm Code Ported From PDN
-		public unsafe override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			blurEffect.Data.Radius = Data.Radius;
-			blurEffect.Render (src, dest, rois);
-
-			contrastEffect.Data.Brightness = Data.Brightness;
-			contrastEffect.Data.Contrast = Data.Contrast;
-			contrastEffect.Render (dest, dest, rois);
-
-			foreach (Gdk.Rectangle roi in rois) {
-				for (int y = roi.Top; y <= roi.GetBottom (); ++y) {
-					ColorBgra* dstPtr = dest.GetPointAddressUnchecked (roi.Left, y);
-					ColorBgra* srcPtr = src.GetPointAddressUnchecked (roi.Left, y);
-
-					screenBlendOp.Apply (dstPtr, srcPtr, dstPtr, roi.Width);
-				}
+		foreach (RectangleI roi in rois) {
+			for (int y = roi.Top; y <= roi.Bottom; ++y) {
+				var dst_row = dst_data.Slice (y * dst_width + roi.Left, roi.Width);
+				var src_row = src_data.Slice (y * src_width + roi.Left, roi.Width);
+				screen_blend_op.Apply (dst_row, src_row, dst_row);
 			}
 		}
-		#endregion
+	}
+	#endregion
 
-		public class GlowData : EffectData
-		{
-			[Caption ("Radius"), MinimumValue (1), MaximumValue (20)]
-			public int Radius = 6;
-			[Caption ("Brightness"), MinimumValue (-100), MaximumValue (100)]
-			public int Brightness = 10;
-			[Caption ("Contrast"), MinimumValue (-100), MaximumValue (100)]
-			public int Contrast = 10;
-		}
+	public sealed class GlowData : EffectData
+	{
+		[Caption ("Radius")]
+		[MinimumValue (1), MaximumValue (20)]
+		public int Radius { get; set; } = 6;
+
+		[Caption ("Brightness")]
+		[MinimumValue (-100), MaximumValue (100)]
+		public int Brightness { get; set; } = 10;
+
+		[Caption ("Contrast")]
+		[MinimumValue (-100), MaximumValue (100)]
+		public int Contrast { get; set; } = 10;
 	}
 }

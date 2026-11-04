@@ -24,29 +24,24 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using Cairo;
+using Pinta.Core;
 
-namespace Pinta.Tools
+namespace Pinta.Tools;
+
+public sealed class GeneratedPoint
 {
-	public class GeneratedPoint
-	{
-		//Note: not using get/set because this is used in time-critical code that is sped up without it.
-		public PointD Position;
-		public int ControlPointIndex;
+	//Note: not using get/set because this is used in time-critical code that is sped up without it.
+	public PointD Position;
+	public int ControlPointIndex;
 
-		/// <summary>
-		/// A wrapper class for a PointD with knowledge of its previous ControlPoint.
-		/// </summary>
-		/// <param name="passedPosition">The position of the PointD on the Canvas.</param>
-		/// <param name="passedControlPointIndex">The index of the previous ControlPoint to the new GeneratedPoint.</param>
-		public GeneratedPoint (PointD passedPosition, int passedControlPointIndex)
-		{
-			Position = passedPosition;
-			ControlPointIndex = passedControlPointIndex;
-		}
+	/// <summary>
+	/// A wrapper class for a PointD with knowledge of its previous ControlPoint.
+	/// </summary>
+	/// <param name="passedPosition">The position of the PointD on the Canvas.</param>
+	/// <param name="passedControlPointIndex">The index of the previous ControlPoint to the new GeneratedPoint.</param>
+	public GeneratedPoint (PointD passedPosition, int passedControlPointIndex)
+	{
+		Position = passedPosition;
+		ControlPointIndex = passedControlPointIndex;
 	}
 }

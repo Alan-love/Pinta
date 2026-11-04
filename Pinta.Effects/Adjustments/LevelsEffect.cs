@@ -8,73 +8,68 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class LevelsEffect : BaseEffect
 {
-	public class LevelsEffect : BaseEffect
+	public sealed override bool IsTileable => true;
+
+	public override string Icon => Pinta.Resources.Icons.AdjustmentsLevels;
+
+	public override string Name => Translations.GetString ("Levels");
+
+	public override bool IsConfigurable => true;
+
+	public override string AdjustmentMenuKey => "L";
+
+	public override string AdjustmentMenuKeyModifiers => "<Primary>";
+
+	public LevelsData Data => (LevelsData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IPaletteService palette;
+	private readonly IWorkspaceService workspace;
+
+	public LevelsEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Adjustments.Levels.png"; }
-		}
+		chrome = services.GetService<IChromeService> ();
+		palette = services.GetService<IPaletteService> ();
+		workspace = services.GetService<IWorkspaceService> ();
 
-		public override string Name {
-			get { return Translations.GetString ("Levels"); }
-		}
-
-		public override bool IsConfigurable {
-			get { return true; }
-		}
-
-		public override string AdjustmentMenuKey {
-			get { return "L"; }
-		}
-
-		public override string AdjustmentMenuKeyModifiers {
-			get { return "<Primary>"; }
-		}
-
-		public LevelsData Data { get { return (LevelsData) EffectData!; } } // NRT - Set in constructor
-
-		public LevelsEffect ()
-		{
-			EffectData = new LevelsData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			using (var dialog = new LevelsDialog (Data)) {
-				dialog.Title = Name;
-				dialog.Icon = PintaCore.Resources.GetIcon (Icon);
-
-				var response = Gtk.ResponseType.None;
-				while (response == Gtk.ResponseType.None) {
-					response = (Gtk.ResponseType) dialog.Run ();
-				}
-
-				return response == Gtk.ResponseType.Ok;
-			}
-		}
-
-		public override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			Data.Levels.Apply (dest, src, rois);
-		}
+		EffectData = new LevelsData ();
 	}
 
-	public class LevelsData : EffectData
+	public override async Task<bool> LaunchConfiguration ()
 	{
-		public UnaryPixelOps.Level Levels { get; set; }
+		// TODO: Delegate `EffectData` changes to event handlers or similar
+		using LevelsDialog dialog = LevelsDialog.New (chrome, palette, workspace, Data);
+		dialog.Title = Name;
+		dialog.IconName = Icon;
 
-		public LevelsData ()
-		{
-			Levels = new UnaryPixelOps.Level ();
-		}
+		Gtk.ResponseType response = await dialog.RunAsync ();
 
-		public override EffectData Clone ()
-		{
-			return new LevelsData () { Levels = (UnaryPixelOps.Level) Levels.Clone () };
-		}
+		dialog.Destroy ();
+
+		return Gtk.ResponseType.Ok == response;
 	}
+
+	public override void Render (ImageSurface src, ImageSurface dest, ReadOnlySpan<RectangleI> rois)
+		=> Data.Levels.Apply (dest, src, rois);
+}
+
+public sealed class LevelsData : EffectData
+{
+	public UnaryPixelOps.Level Levels { get; set; }
+
+	public LevelsData ()
+	{
+		Levels = new UnaryPixelOps.Level ();
+	}
+
+	public override LevelsData Clone ()
+		=> new () { Levels = (UnaryPixelOps.Level) Levels.Clone () };
 }

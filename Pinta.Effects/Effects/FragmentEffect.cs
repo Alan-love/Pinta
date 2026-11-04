@@ -8,113 +8,128 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Collections.Immutable;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class FragmentEffect : BaseEffect
 {
-	public class FragmentEffect : BaseEffect
+	public override string Icon
+		=> Resources.Icons.EffectsBlursFragment;
+
+	public sealed override bool IsTileable
+		=> true;
+
+	public override string Name
+		=> Translations.GetString ("Fragment");
+
+	public override bool IsConfigurable
+		=> true;
+
+	public override string EffectMenuCategory
+		=> Translations.GetString ("Blurs");
+
+	public FragmentData Data
+		=> (FragmentData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public FragmentEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Blurs.Fragment.png"; }
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new FragmentData ();
+	}
+
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
+
+	// Algorithm Code Ported From PDN
+
+	private static ImmutableArray<PointI> RecalcPointOffsets (int fragments, RadiansAngle rotation, int distance)
+	{
+		RadiansAngle pointStep = new (RadiansAngle.FullTurn / fragments);
+		RadiansAngle adjustedRotation = rotation - new RadiansAngle (RadiansAngle.FullTurn / 4);
+		var pointOffsets = ImmutableArray.CreateBuilder<PointI> (fragments);
+		pointOffsets.Count = fragments;
+		for (int i = 0; i < fragments; i++) {
+			RadiansAngle currentAngle = new (adjustedRotation.Radians + (pointStep.Radians * i));
+			pointOffsets[i] = new PointI (
+				X: (int) Math.Round (distance * -Math.Sin (currentAngle.Radians), MidpointRounding.AwayFromZero),
+				Y: (int) Math.Round (distance * -Math.Cos (currentAngle.Radians), MidpointRounding.AwayFromZero));
+		}
+		return pointOffsets.MoveToImmutable ();
+	}
+
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
+	{
+		FragmentSettings settings = CreateSettings (source);
+		ReadOnlySpan<ColorBgra> sourceData = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
+		foreach (var pixel in Tiling.GeneratePixelOffsets (roi, settings.SourceSize))
+			destinationData[pixel.memoryOffset] = GetFinalPixelColor (
+				settings,
+				source,
+				sourceData,
+				pixel);
+	}
+
+	private readonly record struct FragmentSettings (
+		Size SourceSize,
+		ImmutableArray<PointI> PointOffsets);
+	private FragmentSettings CreateSettings (ImageSurface source)
+	{
+		FragmentData data = Data;
+		return new (
+			SourceSize: source.GetSize (),
+			PointOffsets: RecalcPointOffsets (
+				data.Fragments,
+				data.Rotation.ToRadians (),
+				data.Distance)
+		);
+	}
+
+	private static ColorBgra GetFinalPixelColor (
+		in FragmentSettings settings,
+		ImageSurface source,
+		ReadOnlySpan<ColorBgra> sourceData,
+		PixelOffset pixel)
+	{
+		ColorBgra.Blender aggregate = new ();
+
+		for (int i = 0; i < settings.PointOffsets.Length; ++i) {
+
+			PointI relative = pixel.coordinates - settings.PointOffsets[i];
+
+			if (relative.X < 0 || relative.X >= settings.SourceSize.Width || relative.Y < 0 || relative.Y >= settings.SourceSize.Height)
+				continue;
+
+			aggregate += source.GetColorBgra (
+				sourceData,
+				settings.SourceSize.Width,
+				relative);
 		}
 
-		public override string Name {
-			get { return Translations.GetString ("Fragment"); }
-		}
+		if (aggregate.Count == 0)
+			return ColorBgra.Transparent;
+		else
+			return aggregate.Blend ();
+	}
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	public sealed class FragmentData : EffectData
+	{
+		[Caption ("Fragments")]
+		[MinimumValue (2), MaximumValue (50)]
+		public int Fragments { get; set; } = 4;
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Blurs"); }
-		}
+		[Caption ("Distance")]
+		[MinimumValue (0), MaximumValue (100)]
+		public int Distance { get; set; } = 8;
 
-		public FragmentData Data { get { return (FragmentData) EffectData!; } } // NRT - Set in constructor
-
-		public FragmentEffect ()
-		{
-			EffectData = new FragmentData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
-
-		#region Algorithm Code Ported From PDN
-		private Gdk.Point[] RecalcPointOffsets (int fragments, double rotationAngle, int distance)
-		{
-			double pointStep = 2 * Math.PI / (double) fragments;
-			double rotationRadians = ((rotationAngle - 90.0) * Math.PI) / 180.0;
-
-			Gdk.Point[] pointOffsets = new Gdk.Point[fragments];
-
-			for (int i = 0; i < fragments; i++) {
-				double currentRadians = rotationRadians + (pointStep * i);
-
-				pointOffsets[i] = new Gdk.Point (
-				    (int) Math.Round (distance * -Math.Sin (currentRadians), MidpointRounding.AwayFromZero),
-				    (int) Math.Round (distance * -Math.Cos (currentRadians), MidpointRounding.AwayFromZero));
-			}
-
-			return pointOffsets;
-		}
-
-		public unsafe override void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			Gdk.Point[] pointOffsets = RecalcPointOffsets (Data.Fragments, Data.Rotation, Data.Distance);
-
-			int poLength = pointOffsets.Length;
-			Gdk.Point* pointOffsetsPtr = stackalloc Gdk.Point[poLength];
-
-			for (int i = 0; i < poLength; ++i)
-				pointOffsetsPtr[i] = pointOffsets[i];
-
-			ColorBgra* samples = stackalloc ColorBgra[poLength];
-
-			// Cache these for a massive performance boost
-			int src_width = src.Width;
-			int src_height = src.Height;
-			ColorBgra* src_data_ptr = (ColorBgra*) src.DataPtr;
-
-			foreach (Gdk.Rectangle rect in rois) {
-				for (int y = rect.Top; y <= rect.GetBottom (); y++) {
-					ColorBgra* dstPtr = dst.GetPointAddressUnchecked (rect.Left, y);
-
-					for (int x = rect.Left; x <= rect.GetRight (); x++) {
-						int sampleCount = 0;
-
-						for (int i = 0; i < poLength; ++i) {
-							int u = x - pointOffsetsPtr[i].X;
-							int v = y - pointOffsetsPtr[i].Y;
-
-							if (u >= 0 && u < src_width && v >= 0 && v < src_height) {
-								samples[sampleCount] = src.GetPointUnchecked (src_data_ptr, src_width, u, v);
-								++sampleCount;
-							}
-						}
-
-						*dstPtr = ColorBgra.Blend (samples, sampleCount);
-						++dstPtr;
-					}
-				}
-			}
-		}
-		#endregion
-
-		public class FragmentData : EffectData
-		{
-			[Caption ("Fragments"), MinimumValue (2), MaximumValue (50)]
-			public int Fragments = 4;
-
-			[Caption ("Distance"), MinimumValue (0), MaximumValue (100)]
-			public int Distance = 8;
-
-			[Caption ("Rotation")]
-			public double Rotation = 0;
-		}
+		[Caption ("Rotation")]
+		public DegreesAngle Rotation { get; set; } = new (0);
 	}
 }

@@ -1,21 +1,21 @@
-// 
+//
 // ArrowedEditEngine.cs
-//  
+//
 // Author:
 //	   Andrew Davis <andrew.3.1415@gmail.com>
-// 
+//
 // Copyright (c) 2014 Andrew Davis, GSoC 2014
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,334 +25,336 @@
 // THE SOFTWARE.
 
 using System;
+using System.Collections.Generic;
 using Cairo;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Tools
+namespace Pinta.Tools;
+
+public abstract class ArrowedEditEngine : BaseEditEngine
 {
-	public abstract class ArrowedEditEngine : BaseEditEngine
+	private Gtk.Separator? arrow_sep;
+	private Gtk.Label? arrow_label;
+	private Gtk.CheckButton? show_arrow_one_box, show_arrow_two_box;
+
+	private Gtk.SpinButton? arrow_size;
+	private Gtk.Label? arrow_size_label;
+
+	private Gtk.SpinButton? arrow_angle_offset;
+	private Gtk.Label? arrow_angle_offset_label;
+
+	private Gtk.SpinButton? arrow_length_offset;
+	private Gtk.Label? arrow_length_offset_label;
+
+	private Arrow previous_settings_1 = new ();
+	private Arrow previous_settings_2 = new ();
+
+	// NRT - These are all set by HandleBuildToolBar
+	private ISettingsService settings = null!;
+	private string tool_prefix = null!;
+	private Gtk.Box toolbar = null!;
+	private bool extra_toolbar_items_added = false;
+
+	private bool ArrowOneEnabled => ArrowOneEnabledCheckBox.Active;
+	private bool ArrowTwoEnabled => ArrowTwoEnabledCheckBox.Active;
+
+	public ArrowedEditEngine (
+		IServiceProvider services,
+		ShapeTool passedOwner
+	) : base (services, passedOwner) { }
+
+	public override void OnSaveSettings (ISettingsService settings, string toolPrefix)
 	{
-		private SeparatorToolItem? arrowSep;
-		private ToolBarLabel? arrowLabel;
-		private ToolBarWidget<CheckButton>? showArrowOneBox, showArrowTwoBox;
+		base.OnSaveSettings (settings, toolPrefix);
 
-		private ToolBarWidget<SpinButton>? arrowSize;
-		private ToolBarLabel? arrowSizeLabel;
+		if (show_arrow_one_box is not null)
+			settings.PutSetting (SettingNames.Arrow1 (toolPrefix), show_arrow_one_box.Active);
 
-		private ToolBarWidget<SpinButton>? arrowAngleOffset;
-		private ToolBarLabel? arrowAngleOffsetLabel;
+		if (show_arrow_two_box is not null)
+			settings.PutSetting (SettingNames.Arrow2 (toolPrefix), show_arrow_two_box.Active);
 
-		private ToolBarWidget<SpinButton>? arrowLengthOffset;
-		private ToolBarLabel? arrowLengthOffsetLabel;
+		if (arrow_size is not null)
+			settings.PutSetting (SettingNames.ArrowSize (toolPrefix), arrow_size.GetValueAsInt ());
 
-		private Arrow previousSettings1 = new Arrow ();
-		private Arrow previousSettings2 = new Arrow ();
+		if (arrow_angle_offset is not null)
+			settings.PutSetting (SettingNames.ArrowAngle (toolPrefix), arrow_angle_offset.GetValueAsInt ());
 
-		// NRT - These are all set by HandleBuildToolBar
-		private ISettingsService settings = null!;
-		private string tool_prefix = null!;
-		private Toolbar toolbar = null!;
-		private bool extra_toolbar_items_added = false;
+		if (arrow_length_offset is not null)
+			settings.PutSetting (SettingNames.ArrowLength (toolPrefix), arrow_length_offset.GetValueAsInt ());
+	}
 
-		private string ARROW1_SETTING (string prefix) => $"{prefix}-arrow1";
-		private string ARROW2_SETTING (string prefix) => $"{prefix}-arrow2";
-		private string ARROW_SIZE_SETTING (string prefix) => $"{prefix}-arrow-size";
-		private string ARROW_ANGLE_SETTING (string prefix) => $"{prefix}-arrow-angle";
-		private string ARROW_LENGTH_SETTING (string prefix) => $"{prefix}-arrow-length";
+	protected override void BuildShapeToolBar (Gtk.Box tb, ISettingsService settings, string toolPrefix)
+	{
+		base.BuildShapeToolBar (tb, settings, toolPrefix);
 
-		private bool ArrowOneEnabled => ArrowOneEnabledCheckBox.Widget.Active;
-		private bool ArrowTwoEnabled => ArrowTwoEnabledCheckBox.Widget.Active;
+		this.settings = settings;
+		tool_prefix = toolPrefix;
+		toolbar = tb;
 
-		public ArrowedEditEngine (ShapeTool passedOwner) : base (passedOwner)
-		{
-		}
+		tb.Append (ArrowSeparator);
+		tb.Append (ArrowLabel);
+		tb.Append (ArrowOneEnabledCheckBox);
+		tb.Append (ArrowTwoEnabledCheckBox);
 
-		public override void OnSaveSettings (ISettingsService settings, string toolPrefix)
-		{
-			base.OnSaveSettings (settings, toolPrefix);
+		extra_toolbar_items_added = false;
 
-			if (showArrowOneBox is not null)
-				settings.PutSetting (ARROW1_SETTING (toolPrefix), showArrowOneBox.Widget.Active);
-			if (showArrowTwoBox is not null)
-				settings.PutSetting (ARROW2_SETTING (toolPrefix), showArrowTwoBox.Widget.Active);
-			if (arrowSize is not null)
-				settings.PutSetting (ARROW_SIZE_SETTING (toolPrefix), arrowSize.Widget.ValueAsInt);
-			if (arrowAngleOffset is not null)
-				settings.PutSetting (ARROW_ANGLE_SETTING (toolPrefix), arrowAngleOffset.Widget.ValueAsInt);
-			if (arrowLengthOffset is not null)
-				settings.PutSetting (ARROW_LENGTH_SETTING (toolPrefix), arrowLengthOffset.Widget.ValueAsInt);
-		}
+		UpdateArrowOptionToolbarItems ();
+	}
 
-		public override void HandleBuildToolBar (Toolbar tb, ISettingsService settings, string toolPrefix)
-		{
-			base.HandleBuildToolBar (tb, settings, toolPrefix);
+	private void ArrowEnabledToggled (bool arrow1)
+	{
+		UpdateArrowOptionToolbarItems ();
 
-			this.settings = settings;
-			tool_prefix = toolPrefix;
-			toolbar = tb;
+		var activeEngine = (LineCurveSeriesEngine?) ActiveShapeEngine;
 
-			tb.AppendItem (ArrowSeparator);
-			tb.AppendItem (ArrowLabel);
-			tb.AppendItem (ArrowOneEnabledCheckBox);
-			tb.AppendItem (ArrowTwoEnabledCheckBox);
+		if (activeEngine == null)
+			return;
+
+		if (arrow1)
+			activeEngine.Arrow1 = activeEngine.Arrow1 with { Show = ArrowOneEnabled };
+		else
+			activeEngine.Arrow2 = activeEngine.Arrow2 with { Show = ArrowTwoEnabled };
+
+		DrawActiveShape (false, false, true, false, false);
+
+		StorePreviousSettings ();
+	}
+
+	private void UpdateArrowOptionToolbarItems ()
+	{
+		if (ArrowOneEnabled || ArrowTwoEnabled) {
+
+			if (extra_toolbar_items_added)
+				return;
+
+			// Carefully insert after our last toolbar widget, since the Antialiasing dropdown may have been added already.
+			Gtk.Widget after_widget = ArrowTwoEnabledCheckBox;
+			foreach (var widget in GetArrowOptionToolbarItems ()) {
+				toolbar.InsertChildAfter (widget, after_widget);
+				after_widget = widget;
+			}
+
+			extra_toolbar_items_added = true;
+		} else if (extra_toolbar_items_added) {
+
+			foreach (var widget in GetArrowOptionToolbarItems ())
+				toolbar.Remove (widget);
 
 			extra_toolbar_items_added = false;
-
-			UpdateArrowOptionToolbarItems (true);
-		}
-
-		private void ArrowEnabledToggled (bool arrow1)
-		{
-			UpdateArrowOptionToolbarItems ();
-
-			var activeEngine = (LineCurveSeriesEngine?) ActiveShapeEngine;
-
-			if (activeEngine != null) {
-				if (arrow1)
-					activeEngine.Arrow1.Show = ArrowOneEnabled;
-				else
-					activeEngine.Arrow2.Show = ArrowTwoEnabled;
-
-				DrawActiveShape (false, false, true, false, false);
-
-				StorePreviousSettings ();
-			}
-		}
-
-		private void UpdateArrowOptionToolbarItems (bool initial = false)
-		{
-			// We have to do some hackery to get around the fact that the Antialiasing
-			// dropdown is added after our inital toolbar build. As we
-			// add and remove these extra toolbar items we always want them to be before
-			// the Antialiasing dropdown.
-			var offset = initial ? 0 : 2;
-
-			if (ArrowOneEnabled || ArrowTwoEnabled) {
-				if (extra_toolbar_items_added)
-					return;
-
-				toolbar.Insert (ArrowSizeLabel, toolbar.NItems - offset);
-				toolbar.Insert (ArrowSize, toolbar.NItems - offset);
-				toolbar.Insert (ArrowAngleOffsetLabel, toolbar.NItems - offset);
-				toolbar.Insert (ArrowAngleOffset, toolbar.NItems - offset);
-				toolbar.Insert (ArrowLengthOffsetLabel, toolbar.NItems - offset);
-				toolbar.Insert (ArrowLengthOffset, toolbar.NItems - offset);
-
-				extra_toolbar_items_added = true;
-			} else {
-				toolbar.Remove (ArrowSizeLabel);
-				toolbar.Remove (ArrowSize);
-				toolbar.Remove (ArrowAngleOffsetLabel);
-				toolbar.Remove (ArrowAngleOffset);
-				toolbar.Remove (ArrowLengthOffsetLabel);
-				toolbar.Remove (ArrowLengthOffset);
-
-				extra_toolbar_items_added = false;
-			}
-		}
-
-		/// <summary>
-		/// Set the new arrow's settings to be the same as what's in the toolbar settings.
-		/// </summary>
-		protected void setNewArrowSettings (LineCurveSeriesEngine newEngine)
-		{
-			if (showArrowOneBox != null) {
-				newEngine.Arrow1.Show = ArrowOneEnabled;
-				newEngine.Arrow2.Show = ArrowTwoEnabled;
-
-				newEngine.Arrow1.ArrowSize = ArrowSize.Widget.Value;
-				newEngine.Arrow1.AngleOffset = ArrowAngleOffset.Widget.Value;
-				newEngine.Arrow1.LengthOffset = ArrowLengthOffset.Widget.Value;
-
-				newEngine.Arrow2.ArrowSize = newEngine.Arrow1.ArrowSize;
-				newEngine.Arrow2.AngleOffset = newEngine.Arrow1.AngleOffset;
-				newEngine.Arrow2.LengthOffset = newEngine.Arrow1.LengthOffset;
-			}
-		}
-
-
-		public override void UpdateToolbarSettings (ShapeEngine engine)
-		{
-			if (engine != null && engine.ShapeType == ShapeTypes.OpenLineCurveSeries) {
-				if (showArrowOneBox != null) {
-					LineCurveSeriesEngine lCSEngine = (LineCurveSeriesEngine) engine;
-
-					ArrowOneEnabledCheckBox.Widget.Active = lCSEngine.Arrow1.Show;
-					ArrowTwoEnabledCheckBox.Widget.Active = lCSEngine.Arrow2.Show;
-
-					if (ArrowOneEnabled || ArrowTwoEnabled) {
-						ArrowSize.Widget.Value = lCSEngine.Arrow1.ArrowSize;
-						ArrowAngleOffset.Widget.Value = lCSEngine.Arrow1.AngleOffset;
-						ArrowLengthOffset.Widget.Value = lCSEngine.Arrow1.LengthOffset;
-					}
-				}
-
-				base.UpdateToolbarSettings (engine);
-			}
-		}
-
-		protected override void RecallPreviousSettings ()
-		{
-			if (showArrowOneBox != null) {
-				ArrowOneEnabledCheckBox.Widget.Active = previousSettings1.Show;
-				ArrowTwoEnabledCheckBox.Widget.Active = previousSettings2.Show;
-
-				if (ArrowOneEnabled || ArrowTwoEnabled) {
-					ArrowSize.Widget.Value = previousSettings1.ArrowSize;
-					ArrowAngleOffset.Widget.Value = previousSettings1.AngleOffset;
-					ArrowLengthOffset.Widget.Value = previousSettings1.LengthOffset;
-				}
-			}
-
-			base.RecallPreviousSettings ();
-		}
-
-		protected override void StorePreviousSettings ()
-		{
-			if (showArrowOneBox != null) {
-				previousSettings1.Show = ArrowOneEnabled;
-				previousSettings2.Show = ArrowTwoEnabled;
-
-				previousSettings1.ArrowSize = ArrowSize.Widget.Value;
-				previousSettings1.AngleOffset = ArrowAngleOffset.Widget.Value;
-				previousSettings1.LengthOffset = ArrowLengthOffset.Widget.Value;
-
-				//Other Arrow2 settings are unnecessary since they are the same as Arrow1's.
-			}
-
-			base.StorePreviousSettings ();
-		}
-
-
-		protected override void DrawExtras (ref Rectangle? dirty, Context g, ShapeEngine engine)
-		{
-			LineCurveSeriesEngine? lCSEngine = engine as LineCurveSeriesEngine;
-			if (lCSEngine != null && engine.ControlPoints.Count > 0) {
-				// Draw the arrows for the currently active shape.
-				GeneratedPoint[] genPoints = engine.GeneratedPoints;
-
-				if (lCSEngine.Arrow1.Show) {
-					if (genPoints.Length > 1) {
-						dirty = dirty.UnionRectangles (lCSEngine.Arrow1.Draw (g, lCSEngine.OutlineColor,
-						    genPoints[0].Position, genPoints[1].Position));
-					}
-				}
-
-				if (lCSEngine.Arrow2.Show) {
-					if (genPoints.Length > 1) {
-						dirty = dirty.UnionRectangles (lCSEngine.Arrow2.Draw (g, lCSEngine.OutlineColor,
-						    genPoints[genPoints.Length - 1].Position, genPoints[genPoints.Length - 2].Position));
-					}
-				}
-			}
-
-			base.DrawExtras (ref dirty, g, engine);
-		}
-
-		private SeparatorToolItem ArrowSeparator => arrowSep ??= new SeparatorToolItem ();
-		private ToolBarLabel ArrowLabel => arrowLabel ??= new ToolBarLabel (string.Format (" {0}: ", Translations.GetString ("Arrow")));
-
-		private ToolBarWidget<CheckButton> ArrowOneEnabledCheckBox {
-			get {
-				if (showArrowOneBox is null) {
-					showArrowOneBox = new (new CheckButton ("1"));
-					showArrowOneBox.Widget.Active = settings.GetSetting (ARROW1_SETTING (tool_prefix), previousSettings1.Show);
-					showArrowOneBox.Widget.Toggled += (o, e) => ArrowEnabledToggled (true);
-				}
-
-				return showArrowOneBox;
-			}
-		}
-
-		private ToolBarWidget<CheckButton> ArrowTwoEnabledCheckBox {
-			get {
-				if (showArrowTwoBox is null) {
-					showArrowTwoBox = new (new CheckButton ("2"));
-					showArrowTwoBox.Widget.Active = settings.GetSetting (ARROW2_SETTING (tool_prefix), previousSettings2.Show);
-					showArrowTwoBox.Widget.Toggled += (o, e) => ArrowEnabledToggled (false);
-				}
-
-				return showArrowTwoBox;
-			}
-		}
-
-		private ToolBarLabel ArrowSizeLabel => arrowSizeLabel ??= new ToolBarLabel (string.Format (" {0}: ", Translations.GetString ("Size")));
-
-		private ToolBarWidget<SpinButton> ArrowSize {
-			get {
-				if (arrowSize == null) {
-					arrowSize = new (new SpinButton (1, 100, 1) { Value = settings.GetSetting (ARROW_SIZE_SETTING (tool_prefix), 10) });
-
-					arrowSize.Widget.ValueChanged += (o, e) => {
-						var activeEngine = (LineCurveSeriesEngine?) ActiveShapeEngine;
-
-						if (activeEngine != null) {
-							var size = arrowSize.Widget.Value;
-							activeEngine.Arrow1.ArrowSize = size;
-							activeEngine.Arrow2.ArrowSize = size;
-
-							DrawActiveShape (false, false, true, false, false);
-
-							StorePreviousSettings ();
-						}
-					};
-				}
-
-				return arrowSize;
-			}
-		}
-
-		private ToolBarLabel ArrowAngleOffsetLabel => arrowAngleOffsetLabel ??= new ToolBarLabel (string.Format (" {0}: ", Translations.GetString ("Angle")));
-
-		private ToolBarWidget<SpinButton> ArrowAngleOffset {
-			get {
-				if (arrowAngleOffset == null) {
-					arrowAngleOffset = new (new SpinButton (-89, 89, 1) { Value = settings.GetSetting (ARROW_ANGLE_SETTING (tool_prefix), 15) });
-
-					arrowAngleOffset.Widget.ValueChanged += (o, e) => {
-
-						var activeEngine = (LineCurveSeriesEngine?) ActiveShapeEngine;
-						if (activeEngine != null) {
-							var angle = arrowAngleOffset.Widget.Value;
-							activeEngine.Arrow1.AngleOffset = angle;
-							activeEngine.Arrow2.AngleOffset = angle;
-
-							DrawActiveShape (false, false, true, false, false);
-
-							StorePreviousSettings ();
-						}
-					};
-				}
-
-				return arrowAngleOffset;
-			}
-		}
-
-		private ToolBarLabel ArrowLengthOffsetLabel => arrowLengthOffsetLabel ??= new ToolBarLabel (string.Format (" {0}: ", Translations.GetString ("Length")));
-
-		private ToolBarWidget<SpinButton> ArrowLengthOffset {
-			get {
-				if (arrowLengthOffset == null) {
-					arrowLengthOffset = new (new SpinButton (-100, 100, 1) { Value = settings.GetSetting (ARROW_LENGTH_SETTING (tool_prefix), 10) });
-
-					arrowLengthOffset.Widget.ValueChanged += (o, e) => {
-
-						var activeEngine = (LineCurveSeriesEngine?) ActiveShapeEngine;
-						if (activeEngine != null) {
-							var length = arrowLengthOffset.Widget.Value;
-							activeEngine.Arrow1.LengthOffset = length;
-							activeEngine.Arrow2.LengthOffset = length;
-
-							DrawActiveShape (false, false, true, false, false);
-
-							StorePreviousSettings ();
-						}
-					};
-				}
-
-				return arrowLengthOffset;
-			}
 		}
 	}
-}
+
+	/// <summary>
+	/// Set the new arrow's settings to be the same as what's in the toolbar settings.
+	/// </summary>
+	protected void setNewArrowSettings (LineCurveSeriesEngine newEngine)
+	{
+		if (show_arrow_one_box == null)
+			return;
+
+		double newArrowSize = ArrowSize.Value;
+		double newAngleOffset = ArrowAngleOffset.Value;
+		double newLengthOffset = ArrowLengthOffset.Value;
+
+		newEngine.Arrow1 = new (
+			Show: ArrowOneEnabled,
+			ArrowSize: newArrowSize,
+			AngleOffset: newAngleOffset,
+			LengthOffset: newLengthOffset);
+
+		newEngine.Arrow2 = new (
+			Show: ArrowTwoEnabled,
+			ArrowSize: newArrowSize,
+			AngleOffset: newAngleOffset,
+			LengthOffset: newLengthOffset);
+	}
+
+
+	public override void UpdateToolbarSettings (ShapeEngine engine)
+	{
+		if (engine.ShapeType != ShapeTypes.OpenLineCurveSeries)
+			return;
+
+		if (show_arrow_one_box != null) {
+			LineCurveSeriesEngine lCSEngine = (LineCurveSeriesEngine) engine;
+
+			ArrowOneEnabledCheckBox.Active = lCSEngine.Arrow1.Show;
+			ArrowTwoEnabledCheckBox.Active = lCSEngine.Arrow2.Show;
+
+			if (ArrowOneEnabled || ArrowTwoEnabled) {
+				ArrowSize.Value = lCSEngine.Arrow1.ArrowSize;
+				ArrowAngleOffset.Value = lCSEngine.Arrow1.AngleOffset;
+				ArrowLengthOffset.Value = lCSEngine.Arrow1.LengthOffset;
+			}
+		}
+
+		base.UpdateToolbarSettings (engine);
+	}
+
+	protected override void RecallPreviousSettings ()
+	{
+		if (show_arrow_one_box != null) {
+			ArrowOneEnabledCheckBox.Active = previous_settings_1.Show;
+			ArrowTwoEnabledCheckBox.Active = previous_settings_2.Show;
+
+			if (ArrowOneEnabled || ArrowTwoEnabled) {
+				ArrowSize.Value = previous_settings_1.ArrowSize;
+				ArrowAngleOffset.Value = previous_settings_1.AngleOffset;
+				ArrowLengthOffset.Value = previous_settings_1.LengthOffset;
+			}
+		}
+
+		base.RecallPreviousSettings ();
+	}
+
+	protected override void StorePreviousSettings ()
+	{
+		if (show_arrow_one_box != null) {
+
+			previous_settings_1 = new Arrow (
+				Show: ArrowOneEnabled,
+				ArrowSize: ArrowSize.Value,
+				AngleOffset: ArrowAngleOffset.Value,
+				LengthOffset: ArrowLengthOffset.Value);
+
+			previous_settings_2 = previous_settings_2 with { Show = ArrowTwoEnabled };
+
+			//Other Arrow2 settings are unnecessary since they are the same as Arrow1's.
+		}
+
+		base.StorePreviousSettings ();
+	}
+
+
+	protected override void DrawExtras (ref RectangleD? totalDirty, Context g, ShapeEngine engine)
+	{
+		if (engine is LineCurveSeriesEngine lCSEngine && engine.ControlPoints.Count > 0) {
+
+			// Draw the arrows for the currently active shape.
+			ReadOnlySpan<GeneratedPoint> genPoints = engine.GeneratedPoints;
+
+			if (lCSEngine.Arrow1.Show && genPoints.Length > 1) {
+				RectangleD dirty = lCSEngine.Arrow1.Draw (
+					g,
+					lCSEngine.OutlineColor,
+					genPoints[0].Position,
+					genPoints[1].Position);
+				totalDirty = totalDirty?.Union (dirty) ?? dirty;
+			}
+
+			if (lCSEngine.Arrow2.Show && genPoints.Length > 1) {
+				RectangleD dirty = lCSEngine.Arrow2.Draw (
+					g,
+					lCSEngine.OutlineColor,
+					genPoints[^1].Position,
+					genPoints[^2].Position);
+				totalDirty = totalDirty?.Union (dirty) ?? dirty;
+			}
+		}
+
+		base.DrawExtras (ref totalDirty, g, engine);
+	}
+
+	private Gtk.Separator ArrowSeparator
+		=> arrow_sep ??= GtkExtensions.CreateToolBarSeparator ();
+
+	private Gtk.Label ArrowLabel
+		=> arrow_label ??= Gtk.Label.New (string.Format (" {0}: ", Translations.GetString ("Arrow")));
+
+	private Gtk.CheckButton ArrowOneEnabledCheckBox
+		=> show_arrow_one_box ??= CreateArrowOneEnabledCheckBox ();
+
+	private Gtk.CheckButton CreateArrowOneEnabledCheckBox ()
+	{
+		Gtk.CheckButton result = Gtk.CheckButton.NewWithLabel ("1");
+		result.FocusOnClick = false;
+		result.Active = settings.GetSetting (SettingNames.Arrow1 (tool_prefix), previous_settings_1.Show);
+		result.OnToggled += (o, e) => ArrowEnabledToggled (true);
+		return result;
+	}
+
+	private Gtk.CheckButton ArrowTwoEnabledCheckBox
+		=> show_arrow_two_box ??= CreateArrowTwoEnabledCheckBox ();
+
+	private Gtk.CheckButton CreateArrowTwoEnabledCheckBox ()
+	{
+		Gtk.CheckButton result = Gtk.CheckButton.NewWithLabel ("2");
+		result.FocusOnClick = false;
+		result.Active = settings.GetSetting (SettingNames.Arrow2 (tool_prefix), previous_settings_2.Show);
+		result.OnToggled += (o, e) => ArrowEnabledToggled (false);
+		return result;
+	}
+
+	private Gtk.Label ArrowSizeLabel
+		=> arrow_size_label ??= Gtk.Label.New (string.Format (" {0}: ", Translations.GetString ("Size")));
+
+	private Gtk.SpinButton ArrowSize
+		=> arrow_size ??= CreateArrowSize ();
+
+	private Gtk.SpinButton CreateArrowSize ()
+	{
+		Gtk.SpinButton result = GtkExtensions.CreateToolBarSpinButton (1, 100, 1, settings.GetSetting (SettingNames.ArrowSize (tool_prefix), 10));
+		result.OnValueChanged += (o, e) => {
+			var activeEngine = (LineCurveSeriesEngine?) ActiveShapeEngine;
+			if (activeEngine == null) return;
+			var size = result.Value;
+			activeEngine.Arrow1 = activeEngine.Arrow1 with { ArrowSize = size };
+			activeEngine.Arrow2 = activeEngine.Arrow2 with { ArrowSize = size };
+			DrawActiveShape (false, false, true, false, false);
+			StorePreviousSettings ();
+		};
+		return result;
+	}
+
+	private Gtk.Label ArrowAngleOffsetLabel
+		=> arrow_angle_offset_label ??= Gtk.Label.New (string.Format (" {0}: ", Translations.GetString ("Angle")));
+
+	private Gtk.SpinButton ArrowAngleOffset
+		=> arrow_angle_offset ??= CreateArrowAngleOffset ();
+
+	private Gtk.SpinButton CreateArrowAngleOffset ()
+	{
+		Gtk.SpinButton result = GtkExtensions.CreateToolBarSpinButton (-89, 89, 1, settings.GetSetting (SettingNames.ArrowAngle (tool_prefix), 15));
+		result.OnValueChanged += (o, e) => {
+			var activeEngine = (LineCurveSeriesEngine?) ActiveShapeEngine;
+			if (activeEngine == null) return;
+			var angle = result.Value;
+			activeEngine.Arrow1 = activeEngine.Arrow1 with { AngleOffset = angle };
+			activeEngine.Arrow2 = activeEngine.Arrow2 with { AngleOffset = angle };
+			DrawActiveShape (false, false, true, false, false);
+			StorePreviousSettings ();
+		};
+		return result;
+	}
+
+	private Gtk.Label ArrowLengthOffsetLabel
+		=> arrow_length_offset_label ??= Gtk.Label.New (string.Format (" {0}: ", Translations.GetString ("Length")));
+
+	private Gtk.SpinButton ArrowLengthOffset
+		=> arrow_length_offset ??= CreateArrowLengthOffset ();
+
+	private Gtk.SpinButton CreateArrowLengthOffset ()
+	{
+		Gtk.SpinButton result = GtkExtensions.CreateToolBarSpinButton (-100, 100, 1, settings.GetSetting (SettingNames.ArrowLength (tool_prefix), 10));
+		result.OnValueChanged += (o, e) => {
+			var activeEngine = (LineCurveSeriesEngine?) ActiveShapeEngine;
+			if (activeEngine == null) return;
+			var length = result.Value;
+			activeEngine.Arrow1 = activeEngine.Arrow1 with { LengthOffset = length };
+			activeEngine.Arrow2 = activeEngine.Arrow2 with { LengthOffset = length };
+			DrawActiveShape (false, false, true, false, false);
+			StorePreviousSettings ();
+		};
+		return result;
+	}
+
+	private IEnumerable<Gtk.Widget> GetArrowOptionToolbarItems ()
+	{
+		yield return ArrowSizeLabel;
+		yield return ArrowSize;
+		yield return ArrowAngleOffsetLabel;
+		yield return ArrowAngleOffset;
+		yield return ArrowLengthOffsetLabel;
+		yield return ArrowLengthOffset;
+	}
+};

@@ -8,173 +8,175 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
-using System.Diagnostics.CodeAnalysis;
+using System.Collections.Immutable;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class AddNoiseEffect : BaseEffect
 {
-	public class AddNoiseEffect : BaseEffect
+	public sealed override bool IsTileable => true;
+
+	public override string Icon => Resources.Icons.EffectsNoiseAddNoise;
+
+	public override string Name => Translations.GetString ("Add Noise");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Noise");
+
+	public NoiseData Data => (NoiseData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public AddNoiseEffect (IServiceProvider services)
 	{
-		private int intensity;
-		private int colorSaturation;
-		private double coverage;
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new NoiseData ();
+	}
 
-		public override string Icon {
-			get { return "Menu.Effects.Noise.AddNoise.png"; }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override string Name {
-			get { return Translations.GetString ("Add Noise"); }
-		}
+	// Algorithm Code Ported From PDN
+	private const int TABLE_SIZE = 16384;
+	private static readonly ImmutableArray<int> lookup = CreateLookup ();
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	private static double NormalCurve (double x, double scale)
+		=> scale * Math.Exp (-x * x / 2);
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Noise"); }
-		}
+	private static ImmutableArray<int> CreateLookup ()
+	{
+		double l = 5;
+		double r = 10;
+		double scale = 50;
 
-		public NoiseData Data { get { return (NoiseData) EffectData!; } } // NRT - Set in constructor
+		while (r - l > 0.0000001) {
 
-		static AddNoiseEffect ()
-		{
-			InitLookup ();
-		}
+			double s = 0;
+			scale = (l + r) * 0.5;
 
-		public AddNoiseEffect ()
-		{
-			EffectData = new NoiseData ();
-		}
+			for (int i = 0; i < TABLE_SIZE; ++i) {
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
+				s += NormalCurve (16.0 * ((double) i - TABLE_SIZE / 2) / TABLE_SIZE, scale);
 
-		#region Algorithm Code Ported From PDN
-		[ThreadStatic]
-		private static Random threadRand = new Random ();
-		private const int tableSize = 16384;
-		private static int[] lookup;
-
-		private static double NormalCurve (double x, double scale)
-		{
-			return scale * Math.Exp (-x * x / 2);
-		}
-
-		[MemberNotNull (nameof (lookup))]
-		private static void InitLookup ()
-		{
-			double l = 5;
-			double r = 10;
-			double scale = 50;
-			double sum = 0;
-
-			while (r - l > 0.0000001) {
-				sum = 0;
-				scale = (l + r) * 0.5;
-
-				for (int i = 0; i < tableSize; ++i) {
-					sum += NormalCurve (16.0 * ((double) i - tableSize / 2) / tableSize, scale);
-
-					if (sum > 1000000) {
-						break;
-					}
-				}
-
-				if (sum > tableSize) {
-					r = scale;
-				} else if (sum < tableSize) {
-					l = scale;
-				} else {
+				if (s > 1000000)
 					break;
-				}
 			}
 
-			lookup = new int[tableSize];
-			sum = 0;
-			int roundedSum = 0, lastRoundedSum;
-
-			for (int i = 0; i < tableSize; ++i) {
-				sum += NormalCurve (16.0 * ((double) i - tableSize / 2) / tableSize, scale);
-				lastRoundedSum = roundedSum;
-				roundedSum = (int) sum;
-
-				for (int j = lastRoundedSum; j < roundedSum; ++j) {
-					lookup[j] = (i - tableSize / 2) * 65536 / tableSize;
-				}
-			}
+			if (s > TABLE_SIZE)
+				r = scale;
+			else if (s < TABLE_SIZE)
+				l = scale;
+			else
+				break;
 		}
 
-		public unsafe override void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			this.intensity = Data.Intensity;
-			this.colorSaturation = Data.ColorSaturation;
-			this.coverage = 0.01 * Data.Coverage;
+		var result = ImmutableArray.CreateBuilder<int> (TABLE_SIZE);
+		result.Count = TABLE_SIZE;
 
-			int dev = this.intensity * this.intensity / 4;
-			int sat = this.colorSaturation * 4096 / 100;
+		double sum = 0;
+		int roundedSum = 0, lastRoundedSum;
 
-			if (threadRand == null) {
-				threadRand = new Random (unchecked(System.Threading.Thread.CurrentThread.GetHashCode () ^
-				    unchecked((int) DateTime.Now.Ticks)));
-			}
+		for (int i = 0; i < TABLE_SIZE; ++i) {
 
-			Random localRand = threadRand;
-			int[] localLookup = lookup;
+			sum += NormalCurve (16.0 * ((double) i - TABLE_SIZE / 2) / TABLE_SIZE, scale);
+			lastRoundedSum = roundedSum;
+			roundedSum = (int) sum;
 
-			foreach (Gdk.Rectangle rect in rois) {
-				for (int y = rect.Top; y <= rect.GetBottom (); ++y) {
-					ColorBgra* srcPtr = src.GetPointAddressUnchecked (rect.Left, y);
-					ColorBgra* dstPtr = dst.GetPointAddressUnchecked (rect.Left, y);
-
-					for (int x = 0; x < rect.Width; ++x) {
-						if (localRand.NextDouble () > this.coverage) {
-							*dstPtr = *srcPtr;
-						} else {
-							int r;
-							int g;
-							int b;
-							int i;
-
-							r = localLookup[localRand.Next (tableSize)];
-							g = localLookup[localRand.Next (tableSize)];
-							b = localLookup[localRand.Next (tableSize)];
-
-							i = (4899 * r + 9618 * g + 1867 * b) >> 14;
-
-
-							r = i + (((r - i) * sat) >> 12);
-							g = i + (((g - i) * sat) >> 12);
-							b = i + (((b - i) * sat) >> 12);
-
-							dstPtr->R = Utility.ClampToByte (srcPtr->R + ((r * dev + 32768) >> 16));
-							dstPtr->G = Utility.ClampToByte (srcPtr->G + ((g * dev + 32768) >> 16));
-							dstPtr->B = Utility.ClampToByte (srcPtr->B + ((b * dev + 32768) >> 16));
-							dstPtr->A = srcPtr->A;
-						}
-
-						++srcPtr;
-						++dstPtr;
-					}
-				}
-			}
+			for (int j = lastRoundedSum; j < roundedSum; ++j)
+				result[j] = (i - TABLE_SIZE / 2) * 65536 / TABLE_SIZE;
 		}
-		#endregion
 
-		public class NoiseData : EffectData
-		{
-			[Caption ("Intensity"), MinimumValue (0), MaximumValue (100)]
-			public int Intensity = 64;
+		return result.MoveToImmutable ();
+	}
 
-			[Caption ("Color Saturation"), MinimumValue (0), MaximumValue (400)]
-			public int ColorSaturation = 100;
+	private sealed record AddNoiseSettings (
+		Size size,
+		RandomSeed seed,
+		double coverage,
+		int dev,
+		int sat);
 
-			[Caption ("Coverage"), MinimumValue (0), DigitsValue (2), MaximumValue (100)]
-			public double Coverage = 100.0;
-		}
+	private AddNoiseSettings CreateSettings (ImageSurface source)
+	{
+		var data = Data;
+		int intensity = data.Intensity;
+		return new (
+			size: source.GetSize (),
+			seed: data.Seed,
+			coverage: 0.01 * data.Coverage,
+			dev: intensity * intensity / 4,
+			sat: data.ColorSaturation * 4096 / 100
+		);
+	}
+
+	protected override void Render (
+		ImageSurface source,
+		ImageSurface destination,
+		RectangleI rect)
+	{
+		AddNoiseSettings settings = CreateSettings (source);
+
+		ReadOnlySpan<ColorBgra> sourceData = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
+
+		// Reseed the random number generator for each rectangle being rendered.
+		// This should produce consistent results regardless of the number of threads
+		// being used to render the effect, but will change if the effect is tiled differently.
+		Random rand = new (settings.seed.GetValueForRegion (rect));
+
+		foreach (var pixel in Tiling.GeneratePixelOffsets (rect, settings.size))
+			destinationData[pixel.memoryOffset] = GetFinalPixelColor (
+				settings,
+				rand,
+				sourceData[pixel.memoryOffset]);
+	}
+
+	private static ColorBgra GetFinalPixelColor (
+		AddNoiseSettings settings,
+		Random rand,
+		ColorBgra original)
+	{
+		if (rand.NextDouble () > settings.coverage)
+			return original;
+
+		int _r = lookup[rand.Next (TABLE_SIZE)];
+		int _g = lookup[rand.Next (TABLE_SIZE)];
+		int _b = lookup[rand.Next (TABLE_SIZE)];
+
+		int i = (4899 * _r + 9618 * _g + 1867 * _b) >> 14;
+
+		int r = i + (((_r - i) * settings.sat) >> 12);
+		int g = i + (((_g - i) * settings.sat) >> 12);
+		int b = i + (((_b - i) * settings.sat) >> 12);
+
+		return ColorBgra.FromBgra (
+			b: Utility.ClampToByte (original.B + ((b * settings.dev + 32768) >> 16)),
+			g: Utility.ClampToByte (original.G + ((g * settings.dev + 32768) >> 16)),
+			r: Utility.ClampToByte (original.R + ((r * settings.dev + 32768) >> 16)),
+			a: original.A
+		);
+	}
+
+	public sealed class NoiseData : EffectData
+	{
+		[Caption ("Intensity")]
+		[MinimumValue (0), MaximumValue (100)]
+		public int Intensity { get; set; } = 64;
+
+		[Caption ("Color Saturation")]
+		[MinimumValue (0), MaximumValue (400)]
+		public int ColorSaturation { get; set; } = 100;
+
+		[Caption ("Coverage")]
+		[MinimumValue (0), MaximumValue (100), DigitsValue (2), IncrementValue (1)]
+		public double Coverage { get; set; } = 100.0;
+
+		[Caption ("Random Noise Seed")]
+		public RandomSeed Seed { get; set; } = new (0);
 	}
 }

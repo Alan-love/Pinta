@@ -1,21 +1,21 @@
-// 
+//
 // RectangleTool.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -27,22 +27,25 @@
 using System;
 using Pinta.Core;
 
-namespace Pinta.Tools
+namespace Pinta.Tools;
+
+public sealed class RectangleTool : ShapeTool
 {
-	public class RectangleTool : ShapeTool
+	public RectangleTool (IServiceProvider services) : base (services)
 	{
-		public RectangleTool (IServiceManager services) : base (services)
-		{
-			BaseEditEngine.CorrespondingTools.Add (ShapeType, this);
-		}
+		DefaultCursor = Gdk.Cursor.NewFromTexture (Resources.GetIcon ("Cursor.Rectangle.png"), 9, 18, null);
 
-		public override string Name => Translations.GetString ("Rectangle");
-		public override string Icon => Pinta.Resources.Icons.ToolRectangle;
-		public override Gdk.Cursor DefaultCursor => new Gdk.Cursor (Gdk.Display.Default, Resources.GetIcon ("Cursor.Rectangle.png"), 9, 18);
-		public override int Priority => 39;
-
-		public override BaseEditEngine.ShapeTypes ShapeType => BaseEditEngine.ShapeTypes.ClosedLineCurveSeries;
-
-		protected override BaseEditEngine CreateEditEngine () => new RectangleEditEngine (this);
+		BaseEditEngine.CorrespondingTools[ShapeType] = this;
+		EditEngine = new RectangleEditEngine (services, this);
 	}
+
+	public override string Name => Translations.GetString ("Rectangle");
+	public override string Icon => Pinta.Resources.Icons.ToolRectangle;
+	public override Gdk.Cursor DefaultCursor { get; }
+	public override int Priority => 39;
+
+	public override BaseEditEngine EditEngine { get; }
+
+	public override BaseEditEngine.ShapeTypes ShapeType
+		=> BaseEditEngine.ShapeTypes.ClosedLineCurveSeries;
 }

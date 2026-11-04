@@ -8,72 +8,55 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class RedEyeRemoveEffect : BaseEffect
 {
-	public class RedEyeRemoveEffect : BaseEffect
+	public override string Icon => Resources.Icons.EffectsPhotoRedEyeRemove;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Name => Translations.GetString ("Red Eye Removal");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Photo");
+
+	public RedEyeRemoveData Data => (RedEyeRemoveData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+
+	public RedEyeRemoveEffect (IServiceProvider services)
 	{
-		private UnaryPixelOp? op;
-
-		public override string Icon {
-			get { return "Menu.Effects.Photo.RedEyeRemove.png"; }
-		}
-
-		public override string Name {
-			get { return Translations.GetString ("Red Eye Removal"); }
-		}
-
-		public override bool IsConfigurable {
-			get { return true; }
-		}
-
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Photo"); }
-		}
-
-		public RedEyeRemoveData Data { get { return (RedEyeRemoveData) EffectData!; } } // NRT - Set in constructor
-
-		public RedEyeRemoveEffect ()
-		{
-			EffectData = new RedEyeRemoveData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			using (var dialog = new SimpleEffectDialog (Name, PintaCore.Resources.GetIcon (Icon), Data, new PintaLocalizer ())) {
-				// Hookup event handling for live preview.
-				dialog.EffectDataChanged += (o, e) => {
-					if (EffectData != null) {
-						op = new UnaryPixelOps.RedEyeRemove (Data.Tolerance, Data.Saturation);
-						EffectData.FirePropertyChanged (e.PropertyName);
-					}
-				};
-
-				int response = dialog.Run ();
-				bool ret = (response == (int) Gtk.ResponseType.Ok);
-
-				return ret;
-			}
-		}
-
-		public unsafe override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			op?.Apply (dest, src, rois);
-		}
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new RedEyeRemoveData ();
 	}
 
-	public class RedEyeRemoveData : EffectData
-	{
-		[Caption ("Tolerance"), MinimumValue (0), MaximumValue (100)]
-		public int Tolerance = 70;
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		[MinimumValue (0), MaximumValue (100)]
-		[Caption ("Saturation Percentage")]
-		[Hint ("Hint: For best results, first use selection tools to select each eye.")]
-		public int Saturation = 90;
+	public override void Render (ImageSurface source, ImageSurface destination, ReadOnlySpan<RectangleI> rois)
+	{
+		var op = new UnaryPixelOps.RedEyeRemove (Data.Tolerance, Data.Saturation);
+		op.Apply (destination, source, rois);
 	}
+}
+
+public sealed class RedEyeRemoveData : EffectData
+{
+	[Caption ("Tolerance")]
+	[MinimumValue (0), MaximumValue (100)]
+	public int Tolerance { get; set; } = 70;
+
+	[Caption ("Saturation Percentage")]
+	[Hint ("Hint: For best results, first use selection tools to select each eye.")]
+	[MinimumValue (0), MaximumValue (100)]
+	public int Saturation { get; set; } = 90;
 }
 

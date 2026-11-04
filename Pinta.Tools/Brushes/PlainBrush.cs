@@ -24,44 +24,76 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
 using Cairo;
 
 using Pinta.Core;
 
-namespace Pinta.Tools.Brushes
+namespace Pinta.Tools.Brushes;
+
+internal sealed class PlainBrush : BasePaintBrush
 {
-	public class PlainBrush : BasePaintBrush
+	private readonly WorkspaceManager workspace;
+	internal PlainBrush (WorkspaceManager workspace)
 	{
-		public override string Name {
-			get { return Translations.GetString ("Normal"); }
+		this.workspace = workspace;
+	}
+
+	public override string Name => Translations.GetString ("Normal");
+
+	public override int Priority => -100;
+
+	private Path? path;
+
+	protected override RectangleI OnMouseMove (
+		Context g,
+		ImageSurface surface,
+		BrushStrokeArgs strokeArgs)
+	{
+		surface.Clear ();
+
+		g.LineCap = g.LineWidth == 1 ? LineCap.Butt : LineCap.Round;
+
+		if (path is null)
+			g.MoveTo (strokeArgs.LastPosition.X, strokeArgs.LastPosition.Y);
+		else
+			g.AppendPath (path);
+
+		Draw (g, strokeArgs);
+
+		path = g.CopyPath ();
+
+		RectangleI dirty = g.StrokeExtents ().ToInt ();
+
+		// For some reason (?!) we need to inflate the dirty
+		// rectangle for small brush widths in zoomed images
+		RectangleI inflated = dirty.Inflated (1, 1);
+
+		return inflated;
+	}
+
+	private void Draw (
+		Context g,
+		BrushStrokeArgs strokeArgs)
+	{
+		int x = strokeArgs.CurrentPosition.X;
+		int y = strokeArgs.CurrentPosition.Y;
+
+		if (
+			(x == strokeArgs.LastPosition.X) &&
+			(y == strokeArgs.LastPosition.Y) &&
+			(g.LineWidth == 1) &&
+			workspace.ActiveWorkspace.PointInCanvas ((PointD) strokeArgs.CurrentPosition)
+		) {
+			x += 1;
+			y += 1;
 		}
 
-		public override int Priority {
-			get { return -100; }
-		}
+		g.LineTo (x, y);
+		g.StrokePreserve ();
+	}
 
-		protected override Gdk.Rectangle OnMouseMove (Context g, Color strokeColor, ImageSurface surface,
-							      int x, int y, int lastX, int lastY)
-		{
-			// Cairo does not support a single-pixel-long single-pixel-wide line
-			if (x == lastX && y == lastY && g.LineWidth == 1 &&
-			    PintaCore.Workspace.ActiveWorkspace.PointInCanvas (new PointD (x, y))) {
-				g.Rectangle (x, y, 1.0, 1.0);
-				g.Fill ();
-			} else {
-				g.MoveTo (lastX + 0.5, lastY + 0.5);
-				g.LineTo (x + 0.5, y + 0.5);
-				g.StrokePreserve ();
-			}
-
-			Gdk.Rectangle dirty = g.StrokeExtents ().ToGdkRectangle ();
-
-			// For some reason (?!) we need to inflate the dirty
-			// rectangle for small brush widths in zoomed images
-			dirty.Inflate (1, 1);
-
-			return dirty;
-		}
+	protected override void OnMouseUp ()
+	{
+		path = null;
 	}
 }

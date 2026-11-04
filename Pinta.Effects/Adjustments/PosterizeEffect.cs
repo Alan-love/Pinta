@@ -8,63 +8,62 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class PosterizeEffect : BaseEffect
 {
-	public class PosterizeEffect : BaseEffect
+	UnaryPixelOps.PosterizePixel? op = null;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Icon => Pinta.Resources.Icons.AdjustmentsPosterize;
+
+	public override string Name => Translations.GetString ("Posterize");
+
+	public override bool IsConfigurable => true;
+
+	public override string AdjustmentMenuKey => "P";
+
+	public PosterizeData Data => (PosterizeData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+
+	public PosterizeEffect (IServiceProvider services)
 	{
-		UnaryPixelOps.PosterizePixel? op = null;
+		chrome = services.GetService<IChromeService> ();
 
-		public override string Icon {
-			get { return "Menu.Adjustments.Posterize.png"; }
-		}
-
-		public override string Name {
-			get { return Translations.GetString ("Posterize"); }
-		}
-
-		public override bool IsConfigurable {
-			get { return true; }
-		}
-
-		public override string AdjustmentMenuKey {
-			get { return "P"; }
-		}
-
-		public PosterizeData Data { get { return (PosterizeData) EffectData!; } } // NRT - Set in constructor
-
-		public PosterizeEffect ()
-		{
-			EffectData = new PosterizeData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			using (var dialog = new PosterizeDialog ()) {
-				dialog.Title = Name;
-				dialog.Icon = PintaCore.Resources.GetIcon (Icon);
-				dialog.EffectData = Data;
-
-				int response = dialog.Run ();
-				return (response == (int) Gtk.ResponseType.Ok);
-			}
-		}
-
-		public override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			if (op == null)
-				op = new UnaryPixelOps.PosterizePixel (Data.Red, Data.Green, Data.Blue);
-
-			op.Apply (dest, src, rois);
-		}
+		EffectData = new PosterizeData ();
 	}
 
-	public class PosterizeData : EffectData
+	public override async Task<bool> LaunchConfiguration ()
 	{
-		public int Red = 16;
-		public int Green = 16;
-		public int Blue = 16;
+		using PosterizeDialog dialog = PosterizeDialog.New (chrome);
+		dialog.Title = Name;
+		dialog.IconName = Icon;
+		dialog.EffectData = Data; // TODO: Delegate `EffectData` changes to event handlers or similar
+
+		Gtk.ResponseType response = await dialog.RunAsync ();
+
+		dialog.Destroy ();
+
+		return Gtk.ResponseType.Ok == response;
 	}
+
+	public override void Render (ImageSurface src, ImageSurface dest, ReadOnlySpan<RectangleI> rois)
+	{
+		op ??= new UnaryPixelOps.PosterizePixel (Data.Red, Data.Green, Data.Blue);
+
+		op.Apply (dest, src, rois);
+	}
+}
+
+public sealed class PosterizeData : EffectData
+{
+	public int Red { get; set; } = 16;
+	public int Green { get; set; } = 16;
+	public int Blue { get; set; } = 16;
 }

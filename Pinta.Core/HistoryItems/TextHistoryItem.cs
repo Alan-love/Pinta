@@ -24,134 +24,129 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
 using Cairo;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class TextHistoryItem : BaseHistoryItem
 {
-	public class TextHistoryItem : BaseHistoryItem
+	readonly UserLayer user_layer;
+
+	readonly SurfaceDiff? text_surface_diff;
+	ImageSurface? text_surface;
+
+	readonly SurfaceDiff? user_surface_diff;
+	ImageSurface? user_surface;
+
+	TextEngine text_engine;
+	RectangleI text_bounds;
+
+	private readonly IWorkspaceService workspace;
+
+	/// <summary>
+	/// A history item for when text is created, edited, and/or finalized.
+	/// </summary>
+	/// <param name="icon">The history item's icon.</param>
+	/// <param name="text">The history item's title.</param>
+	/// <param name="passedTextSurface">The stored TextLayer surface.</param>
+	/// <param name="passedUserSurface">The stored UserLayer surface.</param>
+	/// <param name="passedTextEngine">The text engine being used.</param>
+	/// <param name="passedUserLayer">The UserLayer being modified.</param>
+	public TextHistoryItem (
+		IWorkspaceService workspace,
+		string icon,
+		string text,
+		ImageSurface passedTextSurface,
+		ImageSurface passedUserSurface,
+		TextEngine passedTextEngine,
+		UserLayer passedUserLayer
+	)
+		: base (icon, text)
 	{
-		UserLayer userLayer;
+		user_layer = passedUserLayer;
 
-		SurfaceDiff? text_surface_diff;
-		ImageSurface? textSurface;
+		text_surface_diff = SurfaceDiff.Create (
+			original: passedTextSurface,
+			updated: user_layer.TextLayer.Layer.Surface,
+			force: true);
 
-		SurfaceDiff? user_surface_diff;
-		ImageSurface? userSurface;
-
-		TextEngine tEngine;
-		Gdk.Rectangle textBounds;
-
-		/// <summary>
-		/// A history item for when text is created, edited, and/or finalized.
-		/// </summary>
-		/// <param name="icon">The history item's icon.</param>
-		/// <param name="text">The history item's title.</param>
-		/// <param name="passedTextSurface">The stored TextLayer surface.</param>
-		/// <param name="passedUserSurface">The stored UserLayer surface.</param>
-		/// <param name="passedTextEngine">The text engine being used.</param>
-		/// <param name="passedUserLayer">The UserLayer being modified.</param>
-		public TextHistoryItem (string icon, string text, ImageSurface passedTextSurface,
-				       ImageSurface passedUserSurface, TextEngine passedTextEngine,
-				       UserLayer passedUserLayer) : base (icon, text)
-		{
-			userLayer = passedUserLayer;
-
-
-			text_surface_diff = SurfaceDiff.Create (passedTextSurface, userLayer.TextLayer.Layer.Surface, true);
-
-			if (text_surface_diff == null) {
-				textSurface = passedTextSurface;
-			} else {
-				(passedTextSurface as IDisposable).Dispose ();
-			}
-
-
-			user_surface_diff = SurfaceDiff.Create (passedUserSurface, userLayer.Surface, true);
-
-			if (user_surface_diff == null) {
-				userSurface = passedUserSurface;
-			} else {
-				(passedUserSurface as IDisposable).Dispose ();
-			}
-
-
-			tEngine = passedTextEngine;
-
-			textBounds = new Gdk.Rectangle (userLayer.textBounds.X, userLayer.textBounds.Y, userLayer.textBounds.Width, userLayer.textBounds.Height);
+		if (text_surface_diff == null) {
+			text_surface = passedTextSurface;
 		}
 
-		public override void Undo ()
-		{
-			Swap ();
+		user_surface_diff = SurfaceDiff.Create (
+			original: passedUserSurface,
+			updated: user_layer.Surface,
+			force: true);
+
+		if (user_surface_diff == null) {
+			user_surface = passedUserSurface;
 		}
 
-		public override void Redo ()
-		{
-			Swap ();
+		text_engine = passedTextEngine;
+
+		text_bounds = new RectangleI (
+			user_layer.TextBounds.X,
+			user_layer.TextBounds.Y,
+			user_layer.TextBounds.Width,
+			user_layer.TextBounds.Height);
+
+		this.workspace = workspace;
+	}
+
+	public override void Undo ()
+	{
+		Swap ();
+	}
+
+	public override void Redo ()
+	{
+		Swap ();
+	}
+
+	private void Swap ()
+	{
+		// Grab the original surface
+		ImageSurface surf = user_layer.TextLayer.Layer.Surface;
+
+		if (text_surface_diff != null) {
+			text_surface_diff.ApplyAndSwap (surf);
+			workspace.Invalidate (text_surface_diff.GetBounds ());
+		} else {
+			// Undo to the "old" surface
+			user_layer.TextLayer.Layer.Surface = text_surface!; // NRT - Will be not-null if text_surface_diff is null
+
+			// Store the original surface for Redo
+			text_surface = surf;
 		}
 
-		private void Swap ()
-		{
-			// Grab the original surface
-			ImageSurface surf = userLayer.TextLayer.Layer.Surface;
+		// Grab the original surface
+		surf = user_layer.Surface;
 
-			if (text_surface_diff != null) {
-				text_surface_diff.ApplyAndSwap (surf);
-				PintaCore.Workspace.Invalidate (text_surface_diff.GetBounds ());
-			} else {
-				// Undo to the "old" surface
-				userLayer.TextLayer.Layer.Surface = textSurface!; // NRT - Will be not-null if text_surface_diff is null
+		if (user_surface_diff != null) {
+			user_surface_diff.ApplyAndSwap (surf);
+			workspace.Invalidate (user_surface_diff.GetBounds ());
+		} else {
+			// Undo to the "old" surface
+			user_layer.Surface = user_surface!; // NRT - Will be not-null if user_surface_diff is null
 
-				// Store the original surface for Redo
-				textSurface = surf;
-			}
-
-
-
-			// Grab the original surface
-			surf = userLayer.Surface;
-
-			if (user_surface_diff != null) {
-				user_surface_diff.ApplyAndSwap (surf);
-				PintaCore.Workspace.Invalidate (user_surface_diff.GetBounds ());
-			} else {
-				// Undo to the "old" surface
-				userLayer.Surface = userSurface!; // NRT - Will be not-null if user_surface_diff is null
-
-				// Store the original surface for Redo
-				userSurface = surf;
-			}
-
-
-
-			//Redraw everything since surfaces were swapped.
-			PintaCore.Workspace.Invalidate ();
-
-
-
-			//Store the old text data temporarily.
-			TextEngine oldTEngine = tEngine;
-			Gdk.Rectangle oldTextBounds = textBounds;
-
-			//Swap half of the data.
-			tEngine = userLayer.tEngine;
-			textBounds = userLayer.textBounds;
-
-			//Swap the other half.
-			userLayer.tEngine = oldTEngine;
-			userLayer.textBounds = oldTextBounds;
+			// Store the original surface for Redo
+			user_surface = surf;
 		}
 
-		public override void Dispose ()
-		{
-			// Free up native surface
-			if (textSurface != null)
-				(textSurface as IDisposable).Dispose ();
+		//Redraw everything since surfaces were swapped.
+		workspace.Invalidate ();
 
-			// Free up native surface
-			if (userSurface != null)
-				(userSurface as IDisposable).Dispose ();
-		}
+		//Store the old text data temporarily.
+		TextEngine oldTextEngine = text_engine;
+		RectangleI oldTextBounds = text_bounds;
+
+		//Swap half of the data.
+		text_engine = user_layer.TextEngine;
+		text_bounds = user_layer.TextBounds;
+
+		//Swap the other half.
+		user_layer.TextEngine = oldTextEngine;
+		user_layer.TextBounds = oldTextBounds;
 	}
 }

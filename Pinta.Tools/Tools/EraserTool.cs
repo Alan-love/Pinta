@@ -1,21 +1,21 @@
-// 
+//
 // EraserTool.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,256 +25,324 @@
 // THE SOFTWARE.
 
 using System;
-using System.Diagnostics.CodeAnalysis;
 using Cairo;
 using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Tools
+namespace Pinta.Tools;
+
+public sealed class EraserTool : BaseBrushTool
 {
-	public class EraserTool : BaseBrushTool
+	private enum EraserType
 	{
-		private enum EraserType
-		{
-			Normal = 0,
-			Smooth = 1,
+		Normal = 0,
+		Smooth = 1,
+	}
+
+	private PointI? last_point = null;
+	private EraserType eraser_type = EraserType.Normal;
+
+	private const int LUT_Resolution = 256;
+	private readonly Lazy<byte[,]> lazy_lut_factor = new (CreateLookupTable);
+	private readonly IWorkspaceService workspace;
+
+	public EraserTool (IServiceProvider services) : base (services)
+	{
+		workspace = services.GetService<IWorkspaceService> ();
+
+		// Update cursor on zoom
+		workspace.ViewSizeChanged += (_, _) => {
+			if (IsActiveTool ()) {
+				SetCursor (DefaultCursor);
+			}
+		};
+	}
+
+	public override string Name
+		=> Translations.GetString ("Eraser");
+
+	public override string Icon
+		=> Pinta.Resources.Icons.ToolEraser;
+
+	public override string StatusBarText
+		=> Translations.GetString ("Left click to erase to transparent, right click to erase to secondary color. ");
+
+	public override Gdk.Key ShortcutKey
+		=> new (Gdk.Constants.KEY_E);
+
+	public override int Priority => 27;
+
+	public override Gdk.Cursor DefaultCursor {
+		get {
+			double scale = workspace.GetScale ();
+			var icon = GdkExtensions.CreateIconWithShape (
+				"Cursor.Eraser.png",
+				CursorShape.Ellipse,
+				scale,
+				BrushWidth,
+				8,
+				22,
+				out int iconOffsetX,
+				out int iconOffsetY);
+
+			return Gdk.Cursor.NewFromTexture (icon, iconOffsetX, iconOffsetY, null);
+		}
+	}
+
+	protected override void OnBuildToolBar (Box tb)
+	{
+		base.OnBuildToolBar (tb);
+
+		tb.Append (TypeLabel);
+		tb.Append (TypeComboBox);
+	}
+
+	protected override void OnMouseMove (Document document, ToolMouseEventArgs e)
+	{
+		PointI newPoint = e.Point;
+		PointD newPointD = e.PointDouble;
+
+		if (mouse_button == MouseButton.None) {
+			last_point = null;
+			return;
 		}
 
-		private Point last_point = point_empty;
-		private EraserType eraser_type = EraserType.Normal;
+		if (!last_point.HasValue)
+			last_point = newPoint;
 
-		private const int LUT_Resolution = 256;
-		private byte[][]? lut_factor;
+		if (document.Workspace.PointInCanvas (newPointD))
+			surface_modified = true;
 
-		private const string ERASER_TYPE_SETTING = "eraser-erase-type";
+		using Context g = document.CreateClippedContext ();
 
-		public EraserTool (IServiceManager services) : base (services)
-		{
+		PointD lastPointD = (PointD) last_point.Value;
+
+		switch (eraser_type) {
+
+			case EraserType.Normal:
+
+				EraseNormal (
+					g,
+					lastPointD,
+					newPointD);
+
+				break;
+
+			case EraserType.Smooth:
+
+				EraseSmooth (
+					document.Layers.CurrentUserLayer.Surface,
+					g,
+					lastPointD,
+					newPointD);
+
+				break;
 		}
 
-		public override string Name => Translations.GetString ("Eraser");
-		public override string Icon => Pinta.Resources.Icons.ToolEraser;
-		public override string StatusBarText => Translations.GetString ("Left click to erase to transparent, right click to erase to secondary color. ");
-		public override bool CursorChangesOnZoom => true;
-		public override Gdk.Key ShortcutKey => Gdk.Key.E;
-		public override int Priority => 27;
+		int dirtyPadding = BrushWidth + 2;
 
-		public override Gdk.Cursor DefaultCursor {
-			get {
-				var icon = GdkExtensions.CreateIconWithShape ("Cursor.Eraser.png",
-								CursorShape.Ellipse, BrushWidth, 8, 22,
-								out var iconOffsetX, out var iconOffsetY);
-				return new Gdk.Cursor (Gdk.Display.Default, icon, iconOffsetX, iconOffsetY);
+		RectangleI dirty =
+			RectangleI.FromPoints (
+				last_point.Value,
+				newPoint)
+			.Inflated (
+				dirtyPadding,
+				dirtyPadding);
+
+		if (document.Workspace.IsPartiallyOffscreen (dirty))
+			document.Workspace.Invalidate ();
+		else
+			document.Workspace.Invalidate (document.ClampToImageSize (dirty));
+
+		last_point = newPoint;
+	}
+
+	protected override void OnSaveSettings (ISettingsService settings)
+	{
+		base.OnSaveSettings (settings);
+
+		if (type_combobox is not null)
+			settings.PutSetting (SettingNames.ERASER_ERASE_TYPE, type_combobox.ComboBox.Active);
+	}
+
+	private static byte[,] CreateLookupTable ()
+	{
+		int arrayDimensions = LUT_Resolution + 1;
+		byte[,] result = new byte[arrayDimensions, arrayDimensions];
+		for (int dy = 0; dy < arrayDimensions; dy++) {
+			for (int dx = 0; dx < arrayDimensions; dx++) {
+				double d = Mathematics.Magnitude<double> (dx, dy) / LUT_Resolution;
+				result[dy, dx] =
+					d > 1.0
+					? (byte) 255
+					: (byte) (255.0 - Math.Cos (Math.Sqrt (d) * Math.PI / 2.0) * 255.0);
 			}
 		}
+		return result;
+	}
 
-		protected override void OnBuildToolBar (Toolbar tb)
-		{
-			base.OnBuildToolBar (tb);
+	private static ImageSurface CopySurfacePart (ImageSurface surface, RectangleI destinationBounds)
+	{
+		ImageSurface temporarySurface = CairoExtensions.CreateImageSurface (
+			Format.Argb32,
+			destinationBounds.Width,
+			destinationBounds.Height);
 
-			tb.AppendItem (TypeLabel);
-			tb.AppendItem (TypeComboBox);
-		}
+		using Context g = new (temporarySurface) { Operator = Operator.Source };
 
-		protected override void OnMouseMove (Document document, ToolMouseEventArgs e)
-		{
-			var new_point = e.Point;
-			var new_pointd = e.PointDouble;
+		g.SetSourceSurface (
+			surface,
+			-destinationBounds.Left,
+			-destinationBounds.Top);
 
-			if (mouse_button == MouseButton.None) {
-				last_point = point_empty;
-				return;
-			}
+		g.Rectangle (
+			new RectangleD (
+				0,
+				0,
+				destinationBounds.Width,
+				destinationBounds.Height));
 
-			if (last_point.Equals (point_empty))
-				last_point = new_point;
+		g.Fill ();
 
-			if (document.Workspace.PointInCanvas (new_pointd))
-				surface_modified = true;
+		//Flush to make sure all drawing operations are finished
+		temporarySurface.Flush ();
 
-			using (var g = document.CreateClippedContext ()) {
-				var last_pointd = new PointD (last_point.X, last_point.Y);
+		return temporarySurface;
+	}
 
-				if (eraser_type == EraserType.Normal)
-					EraseNormal (g, last_pointd, new_pointd);
-				else if (eraser_type == EraserType.Smooth)
-					EraseSmooth (document.Layers.CurrentUserLayer.Surface, g, last_pointd, new_pointd);
-			}
+	private static void PasteSurfacePart (Context g, ImageSurface temporarySurface, RectangleI destinationBounds)
+	{
+		g.Operator = Operator.Source;
 
-			var dirty = CairoExtensions.GetRectangleFromPoints (last_point, new_point, BrushWidth + 2);
+		g.SetSourceSurface (
+			temporarySurface,
+			destinationBounds.Left,
+			destinationBounds.Top);
 
-			if (document.Workspace.IsPartiallyOffscreen (dirty))
-				document.Workspace.Invalidate ();
-			else
-				document.Workspace.Invalidate (document.ClampToImageSize (dirty));
+		g.Rectangle (
+			new RectangleD (
+				destinationBounds.Left,
+				destinationBounds.Top,
+				destinationBounds.Width,
+				destinationBounds.Height));
 
-			last_point = new_point;
-		}
+		g.Fill ();
+	}
 
-		protected override void OnSaveSettings (ISettingsService settings)
-		{
-			base.OnSaveSettings (settings);
+	private void EraseNormal (Context g, PointD start, PointD end)
+	{
+		g.Antialias = UseAntialiasing ? Antialias.Subpixel : Antialias.None;
 
-			if (type_combobox is not null)
-				settings.PutSetting (ERASER_TYPE_SETTING, type_combobox.ComboBox.Active);
-		}
+		// Adding 0.5 forces cairo into the correct square:
+		// See https://bugs.launchpad.net/bugs/672232
+		g.MoveTo (start.X + 0.5, start.Y + 0.5);
+		g.LineTo (end.X + 0.5, end.Y + 0.5);
 
-		[MemberNotNull (nameof (lut_factor))]
-		private void InitLookupTable ()
-		{
-			if (lut_factor is null) {
-				lut_factor = new byte[LUT_Resolution + 1][];
-
-				for (var dy = 0; dy < LUT_Resolution + 1; dy++) {
-					lut_factor[dy] = new byte[LUT_Resolution + 1];
-
-					for (var dx = 0; dx < LUT_Resolution + 1; dx++) {
-						var d = Math.Sqrt (dx * dx + dy * dy) / LUT_Resolution;
-
-						if (d > 1.0)
-							lut_factor[dy][dx] = 255;
-						else
-							lut_factor[dy][dx] = (byte) (255.0 - Math.Cos (Math.Sqrt (d) * Math.PI / 2.0) * 255.0);
-					}
-				}
-			}
-		}
-
-		private ImageSurface CopySurfacePart (ImageSurface surf, Gdk.Rectangle dest_rect)
-		{
-			var tmp_surface = CairoExtensions.CreateImageSurface (Format.Argb32, dest_rect.Width, dest_rect.Height);
-
-			using (var g = new Context (tmp_surface)) {
-				g.Operator = Operator.Source;
-				g.SetSourceSurface (surf, -dest_rect.Left, -dest_rect.Top);
-				g.Rectangle (new Rectangle (0, 0, dest_rect.Width, dest_rect.Height));
-				g.Fill ();
-			}
-
-			//Flush to make sure all drawing operations are finished
-			tmp_surface.Flush ();
-
-			return tmp_surface;
-		}
-
-		private void PasteSurfacePart (Context g, ImageSurface tmp_surface, Gdk.Rectangle dest_rect)
-		{
+		// Right-click is erase to background color, left-click is transparent
+		if (mouse_button == MouseButton.Right) {
 			g.Operator = Operator.Source;
-			g.SetSourceSurface (tmp_surface, dest_rect.Left, dest_rect.Top);
-			g.Rectangle (new Rectangle (dest_rect.Left, dest_rect.Top, dest_rect.Width, dest_rect.Height));
-			g.Fill ();
-		}
+			g.SetSourceColor (Palette.SecondaryColor);
+		} else
+			g.Operator = Operator.Clear;
 
-		private void EraseNormal (Context g, PointD start, PointD end)
-		{
-			g.Antialias = UseAntialiasing ? Antialias.Subpixel : Antialias.None;
+		g.LineWidth = BrushWidth;
+		g.LineJoin = LineJoin.Round;
+		g.LineCap = LineCap.Round;
 
-			// Adding 0.5 forces cairo into the correct square:
-			// See https://bugs.launchpad.net/bugs/672232
-			g.MoveTo (start.X + 0.5, start.Y + 0.5);
-			g.LineTo (end.X + 0.5, end.Y + 0.5);
+		g.Stroke ();
+	}
 
-			// Right-click is erase to background color, left-click is transparent
-			if (mouse_button == MouseButton.Right) {
-				g.Operator = Operator.Source;
-				g.SetSourceColor (Palette.SecondaryColor);
-			} else
-				g.Operator = Operator.Clear;
+	private void EraseSmooth (ImageSurface surf, Context g, PointD start, PointD end)
+	{
+		int rad = (int) (BrushWidth / 2.0) + 1;
 
-			g.LineWidth = BrushWidth;
-			g.LineJoin = LineJoin.Round;
-			g.LineCap = LineCap.Round;
+		// Premultiply with alpha value
+		byte backgroundA = (byte) (Palette.SecondaryColor.A * 255.0);
+		byte backgroundR = (byte) (Palette.SecondaryColor.R * backgroundA);
+		byte backgroundG = (byte) (Palette.SecondaryColor.G * backgroundA);
+		byte backgroundB = (byte) (Palette.SecondaryColor.B * backgroundA);
 
-			g.Stroke ();
-		}
+		int numberOfSteps = (int) start.Distance (end) / rad + 1;
 
-		private unsafe void EraseSmooth (ImageSurface surf, Context g, PointD start, PointD end)
-		{
-			var rad = (int) (BrushWidth / 2.0) + 1;
+		// Initialize lookup table when first used (to prevent slower startup of the application)
+		byte[,] lut_factor = lazy_lut_factor.Value;
 
-			// Premultiply with alpha value
-			var bk_col_a = (byte) (Palette.SecondaryColor.A * 255.0);
-			var bk_col_r = (byte) (Palette.SecondaryColor.R * bk_col_a);
-			var bk_col_g = (byte) (Palette.SecondaryColor.G * bk_col_a);
-			var bk_col_b = (byte) (Palette.SecondaryColor.B * bk_col_a);
-			var num_steps = (int) start.Distance (end) / rad + 1;
+		for (var step = 0; step < numberOfSteps; step++) {
 
-			// Initialize lookup table when first used (to prevent slower startup of the application)
-			InitLookupTable ();
+			PointD pt = Utility.Lerp (
+				start,
+				end,
+				(float) step / numberOfSteps);
 
-			for (var step = 0; step < num_steps; step++) {
-				var pt = Utility.Lerp (start, end, (float) step / num_steps);
-				int x = (int) pt.X, y = (int) pt.Y;
+			int x = (int) pt.X;
+			int y = (int) pt.Y;
 
-				var surface_rect = new Gdk.Rectangle (0, 0, surf.Width, surf.Height);
-				var brush_rect = new Gdk.Rectangle (x - rad, y - rad, 2 * rad, 2 * rad);
-				var dest_rect = Gdk.Rectangle.Intersect (surface_rect, brush_rect);
+			RectangleI surfaceBounds = new (0, 0, surf.Width, surf.Height);
+			RectangleI brushBounds = new (x - rad, y - rad, 2 * rad, 2 * rad);
+			RectangleI destinationBounds = RectangleI.Intersect (surfaceBounds, brushBounds);
 
-				if ((dest_rect.Width > 0) && (dest_rect.Height > 0)) {
-					// Allow Clipping through a temporary surface
-					using (var tmp_surface = CopySurfacePart (surf, dest_rect)) {
+			if (destinationBounds.Width <= 0 || destinationBounds.Height <= 0)
+				continue;
 
-						for (var iy = dest_rect.Top; iy < dest_rect.Bottom; iy++) {
-							var srcRowPtr = tmp_surface.GetRowAddressUnchecked (iy - dest_rect.Top);
-							var dy = ((iy - y) * LUT_Resolution) / rad;
+			// Allow Clipping through a temporary surface
+			ImageSurface temporarySurface = CopySurfacePart (surf, destinationBounds);
+			Span<ColorBgra> temporaryData = temporarySurface.GetPixelData ();
 
-							if (dy < 0)
-								dy = -dy;
+			for (int iy = destinationBounds.Top; iy < destinationBounds.Bottom; iy++) {
 
-							var lut_factor_row = lut_factor[dy];
+				var srcRow = temporaryData[(temporarySurface.Width * (iy - destinationBounds.Top))..];
+				int dy = Math.Abs ((iy - y) * LUT_Resolution / rad);
 
-							for (var ix = dest_rect.Left; ix < dest_rect.Right; ix++) {
-								var col = *srcRowPtr;
-								var dx = ((ix - x) * LUT_Resolution) / rad;
+				for (var ix = destinationBounds.Left; ix < destinationBounds.Right; ix++) {
 
-								if (dx < 0)
-									dx = -dx;
+					int dx = Math.Abs ((ix - x) * LUT_Resolution / rad);
 
-								var force = lut_factor_row[dx];
+					byte force = lut_factor[dy, dx];
 
-								// Note: premultiplied alpha is used!
-								if (mouse_button == MouseButton.Right) {
-									col.A = (byte) ((col.A * force + bk_col_a * (255 - force)) / 255);
-									col.R = (byte) ((col.R * force + bk_col_r * (255 - force)) / 255);
-									col.G = (byte) ((col.G * force + bk_col_g * (255 - force)) / 255);
-									col.B = (byte) ((col.B * force + bk_col_b * (255 - force)) / 255);
-								} else {
-									col.A = (byte) (col.A * force / 255);
-									col.R = (byte) (col.R * force / 255);
-									col.G = (byte) (col.G * force / 255);
-									col.B = (byte) (col.B * force / 255);
-								}
+					// Note: premultiplied alpha is used!
+					int idx = ix - destinationBounds.Left;
 
-								*srcRowPtr = col;
-								srcRowPtr++;
-							}
-						}
+					ColorBgra original = srcRow[idx];
 
-						// Draw the final result on the surface
-						PasteSurfacePart (g, tmp_surface, dest_rect);
-					}
-				}
-			}
-		}
+					srcRow[idx] = mouse_button switch {
 
-		private ToolBarLabel? type_label;
-		private ToolBarComboBox? type_combobox;
+						MouseButton.Right => ColorBgra.FromBgra (
+							b: (byte) ((original.B * force + backgroundB * (255 - force)) / 255),
+							g: (byte) ((original.G * force + backgroundG * (255 - force)) / 255),
+							r: (byte) ((original.R * force + backgroundR * (255 - force)) / 255),
+							a: (byte) ((original.A * force + backgroundA * (255 - force)) / 255)),
 
-		private ToolBarLabel TypeLabel => type_label ??= new ToolBarLabel (string.Format (" {0}: ", Translations.GetString ("Type")));
-		private ToolBarComboBox TypeComboBox {
-			get {
-				if (type_combobox is null) {
-					type_combobox = new ToolBarComboBox (100, 0, false, Translations.GetString ("Normal"), Translations.GetString ("Smooth"));
-
-					type_combobox.ComboBox.Active = Settings.GetSetting (ERASER_TYPE_SETTING, 0);
-
-					type_combobox.ComboBox.Changed += (o, e) => {
-						eraser_type = (EraserType) type_combobox.ComboBox.Active;
+						_ => ColorBgra.FromBgra (
+							b: (byte) (original.B * force / 255),
+							g: (byte) (original.G * force / 255),
+							r: (byte) (original.R * force / 255),
+							a: (byte) (original.A * force / 255)),
 					};
 				}
-
-				return type_combobox;
 			}
+
+			// Draw the final result on the surface
+			PasteSurfacePart (g, temporarySurface, destinationBounds);
+		}
+	}
+
+	private Label? type_label;
+	private ToolBarComboBox? type_combobox;
+
+	private Label TypeLabel => type_label ??= Label.New (string.Format (" {0}: ", Translations.GetString ("Type")));
+	private ToolBarComboBox TypeComboBox {
+		get {
+			if (type_combobox is null) {
+				type_combobox = ToolBarComboBox.New (100, 0, false, Translations.GetString ("Normal"), Translations.GetString ("Smooth"));
+
+				type_combobox.ComboBox.OnChanged += (o, e) => {
+					eraser_type = (EraserType) type_combobox.ComboBox.Active;
+				};
+
+				type_combobox.ComboBox.Active = Settings.GetSetting (SettingNames.ERASER_ERASE_TYPE, 0);
+			}
+
+			return type_combobox;
 		}
 	}
 }

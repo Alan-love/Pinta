@@ -8,98 +8,87 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Effects;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class PencilSketchEffect : BaseEffect
 {
-	public class PencilSketchEffect : BaseEffect
+	private readonly GaussianBlurEffect gaussian_blur;
+	private readonly UnaryPixelOps.Desaturate desaturate;
+	private readonly InvertColorsEffect invert;
+	private readonly BrightnessContrastEffect brightness_contrast;
+	private readonly UserBlendOps.ColorDodgeBlendOp color_dodge;
+
+	public override string Icon => Resources.Icons.EffectsArtisticPencilSketch;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Name => Translations.GetString ("Pencil Sketch");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Artistic");
+
+	public PencilSketchData Data => (PencilSketchData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public PencilSketchEffect (IServiceProvider services)
 	{
-		private GaussianBlurEffect blurEffect;
-		private UnaryPixelOps.Desaturate desaturateOp;
-		private InvertColorsEffect invertEffect;
-		private BrightnessContrastEffect bacAdjustment;
-		private UserBlendOps.ColorDodgeBlendOp colorDodgeOp;
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
 
-		public override string Icon {
-			get { return "Menu.Effects.Artistic.PencilSketch.png"; }
-		}
+		EffectData = new PencilSketchData ();
 
-		public override string Name {
-			get { return Translations.GetString ("Pencil Sketch"); }
-		}
+		gaussian_blur = new GaussianBlurEffect (services);
+		desaturate = new UnaryPixelOps.Desaturate ();
+		invert = new InvertColorsEffect (services);
+		brightness_contrast = new BrightnessContrastEffect (services);
+		color_dodge = new UserBlendOps.ColorDodgeBlendOp ();
+	}
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Artistic"); }
-		}
+	public override void Render (ImageSurface source, ImageSurface destination, ReadOnlySpan<RectangleI> rois)
+	{
+		PencilSketchData data = Data;
 
-		public PencilSketchData Data { get { return (PencilSketchData) EffectData!; } } // NRT - Set in constructor
+		gaussian_blur.Data.Radius = data.PencilTipSize;
+		gaussian_blur.Render (source, destination, rois);
 
-		public PencilSketchEffect ()
-		{
-			EffectData = new PencilSketchData ();
+		brightness_contrast.Data.Brightness = data.ColorRange;
+		brightness_contrast.Data.Contrast = -data.ColorRange;
+		brightness_contrast.Render (destination, destination, rois);
 
-			blurEffect = new GaussianBlurEffect ();
-			desaturateOp = new UnaryPixelOps.Desaturate ();
-			invertEffect = new InvertColorsEffect ();
-			bacAdjustment = new BrightnessContrastEffect ();
-			colorDodgeOp = new UserBlendOps.ColorDodgeBlendOp ();
-		}
+		invert.Render (destination, destination, rois);
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
+		desaturate.Apply (destination, destination, rois);
 
-		#region Algorithm Code Ported From PDN
-		public unsafe override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			bacAdjustment.Data.Brightness = -Data.ColorRange;
-			bacAdjustment.Data.Contrast = -Data.ColorRange;
-			bacAdjustment.Render (src, dest, rois);
+		ReadOnlySpan<ColorBgra> sourceData = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
 
-			blurEffect.Data.Radius = Data.PencilTipSize;
-			blurEffect.Render (src, dest, rois);
+		Size canvasSize = source.GetSize ();
 
-			invertEffect.Render (dest, dest, rois);
-			desaturateOp.Apply (dest, dest, rois);
-
-			ColorBgra* dst_dataptr = (ColorBgra*) dest.DataPtr;
-			int dst_width = dest.Width;
-			ColorBgra* src_dataptr = (ColorBgra*) src.DataPtr;
-			int src_width = src.Width;
-
-			foreach (Gdk.Rectangle roi in rois) {
-				for (int y = roi.Top; y <= roi.GetBottom (); ++y) {
-					ColorBgra* srcPtr = src.GetPointAddressUnchecked (src_dataptr, src_width, roi.X, y);
-					ColorBgra* dstPtr = dest.GetPointAddressUnchecked (dst_dataptr, dst_width, roi.X, y);
-
-					for (int x = roi.Left; x <= roi.GetRight (); ++x) {
-						ColorBgra srcGrey = desaturateOp.Apply (*srcPtr);
-						ColorBgra sketched = colorDodgeOp.Apply (srcGrey, *dstPtr);
-						*dstPtr = sketched;
-
-						++srcPtr;
-						++dstPtr;
-					}
-				}
+		foreach (RectangleI roi in rois) {
+			foreach (var pixel in Tiling.GeneratePixelOffsets (roi, canvasSize)) {
+				ColorBgra desaturatedSource = desaturate.Apply (sourceData[pixel.memoryOffset]);
+				destinationData[pixel.memoryOffset] = color_dodge.Apply (desaturatedSource, destinationData[pixel.memoryOffset]);
 			}
 		}
-		#endregion
+	}
 
-		public class PencilSketchData : EffectData
-		{
-			[Caption ("Pencil Tip Size"), MinimumValue (1), MaximumValue (20)]
-			public int PencilTipSize = 2;
+	public sealed class PencilSketchData : EffectData
+	{
+		[Caption ("Pencil Tip Size")]
+		[MinimumValue (1), MaximumValue (20)]
+		public int PencilTipSize { get; set; } = 2;
 
-			[Caption ("Color Range"), MinimumValue (-20), MaximumValue (20)]
-			public int ColorRange = 0;
-		}
+		[Caption ("Color Range")]
+		[MinimumValue (-20), MaximumValue (20)]
+		public int ColorRange { get; set; } = 0;
 	}
 }

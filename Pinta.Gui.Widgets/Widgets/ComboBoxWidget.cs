@@ -1,21 +1,21 @@
-// 
+//
 // ComboBoxWidget.cs
-//  
+//
 // Author:
 //       Olivier Dufour <olivier.duff@gmail.com>
-// 
+//
 // Copyright (c) 2010 Olivier Dufour
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,64 +25,72 @@
 // THE SOFTWARE.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using Gtk;
+using Pinta.Core;
 
-namespace Pinta.Gui.Widgets
+namespace Pinta.Gui.Widgets;
+
+[GObject.Subclass<Gtk.Box>]
+public sealed partial class ComboBoxWidget
 {
-	public class ComboBoxWidget : FilledAreaBin
+	private Gtk.Label title_label;
+	private Gtk.ComboBoxText combo_box;
+
+	[MemberNotNull (nameof (title_label), nameof (combo_box))]
+	partial void Initialize ()
 	{
-		private Label label;
-		private ComboBoxText combobox;
+		const int SPACING = 6;
 
-		public ComboBoxWidget (string[] entries)
-		{
-			Build ();
+		Gtk.Label titleLabel = Gtk.Label.New (null);
+		titleLabel.AddCssClass (AdwaitaStyles.Title4);
 
-			foreach (var s in entries)
-				combobox.AppendText (s);
+		Gtk.Box labelAndLine = Gtk.Box.New (Gtk.Orientation.Horizontal, SPACING);
+		labelAndLine.Append (titleLabel);
 
-			combobox.Changed += delegate {
-				Changed?.Invoke (this, EventArgs.Empty);
-			};
-		}
+		Gtk.ComboBoxText comboBox = Gtk.ComboBoxText.New ();
 
-		public string Label {
-			get => label.Text;
-			set => label.Text = value;
-		}
+		// --- Initialization (Gtk.Box)
 
-		public int Active {
-			get => combobox.Active;
-			set => combobox.Active = value;
-		}
+		SetOrientation (Gtk.Orientation.Vertical);
+		Spacing = SPACING;
 
-		public string ActiveText => combobox.ActiveText;
+		Append (labelAndLine);
+		Append (comboBox);
 
-		public event EventHandler? Changed;
+		// --- References to keep
 
-		[MemberNotNull (nameof (label), nameof (combobox))]
-		private void Build ()
-		{
-			// Section label + line
-			var hbox1 = new HBox (false, 6);
-
-			label = new Label ();
-			hbox1.PackStart (label, false, false, 0);
-			hbox1.PackStart (new HSeparator (), true, true, 0);
-
-			// Combobox
-			combobox = new ComboBoxText ();
-
-			// Main layout
-			var vbox = new VBox (false, 6) {
-				hbox1,
-				combobox
-			};
-
-			Add (vbox);
-
-			vbox.ShowAll ();
-		}
+		title_label = titleLabel;
+		combo_box = comboBox;
 	}
+
+	private void Configure (IEnumerable<string> entries)
+	{
+		foreach (var s in entries)
+			combo_box.AppendText (s);
+
+		combo_box.OnChanged += (_, _) => Changed?.Invoke (this, EventArgs.Empty);
+	}
+
+	public static ComboBoxWidget New (IEnumerable<string> entries)
+	{
+		ComboBoxWidget widget = NewWithProperties ([]);
+		widget.Configure (entries);
+		return widget;
+	}
+
+	public string Label {
+		get => title_label.GetText ();
+		set => title_label.SetText (value);
+	}
+
+	public int Active {
+		get => combo_box.Active;
+		set => combo_box.Active = value;
+	}
+
+	public string ActiveText
+		=> combo_box.GetActiveText ()!;
+
+	public event EventHandler? Changed;
 }

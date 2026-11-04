@@ -1,21 +1,21 @@
-// 
+//
 // NewImageDialog.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2015 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -28,326 +28,434 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
-using Cairo;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta
+namespace Pinta;
+
+[GObject.Subclass<Gtk.Dialog>]
+public sealed partial class NewImageDialog
 {
-	public class NewImageDialog : Dialog
+	private bool has_clipboard;
+	private bool suppress_events;
+	private IPaletteService palette = null!; // NRT - set by factory method.
+	private Size clipboard_size;
+
+	private Gtk.Box hbox_background;
+	private Gtk.Image image_background;
+	private PreviewArea preview_box;
+
+	private Gtk.StringList preset_dropdown_model;
+	private Gtk.DropDown preset_dropdown;
+	private Gtk.Entry width_entry;
+	private Gtk.Entry height_entry;
+
+	private Gtk.CheckButton portrait_radio;
+	private Gtk.CheckButton landscape_radio;
+
+	private Gtk.CheckButton white_background_radio;
+	private Gtk.CheckButton secondary_background_radio;
+	private Gtk.CheckButton transparent_background_radio;
+
+	[MemberNotNull (nameof (hbox_background), nameof (image_background), nameof (preview_box))]
+	[MemberNotNull (nameof (preset_dropdown_model), nameof (preset_dropdown), nameof (width_entry), nameof (height_entry))]
+	[MemberNotNull (nameof (portrait_radio), nameof (landscape_radio))]
+	[MemberNotNull (nameof (white_background_radio), nameof (secondary_background_radio), nameof (transparent_background_radio))]
+	partial void Initialize ()
 	{
-		/// <summary>
-		/// Configures and builds a NewImageDialog object.
-		/// </summary>
-		/// <param name="imgWidth">Initial value of the width entry.</param>
-		/// <param name="imgHeight">Initial value of the height entry.</param>
-		/// <param name="isClipboardSize">Indicates if there is an image on the clipboard (and the size parameters represent the clipboard image size).</param>
-		private bool allow_background_color;
-		private bool has_clipboard;
-		private bool suppress_events;
+		// --- Control creation
+		Gtk.Label sizeLabel = CreateSizeLabel ();
 
-		private Gdk.Size clipboard_size;
+		Gtk.StringList presetDropdownModel = Gtk.StringList.New ([]);
+		Gtk.DropDown presetDropdown = Gtk.DropDown.New (presetDropdownModel, expression: null);
 
-		private List<Gdk.Size> preset_sizes;
-		private PreviewArea preview;
+		Gtk.Label widthLabel = CreateWidthLabel ();
+		Gtk.Entry widthEntry = CreateLengthEntry ();
+		Gtk.Label widthUnitsLabel = CreateUnitsLabel ();
+		Gtk.Box widthHbox = GtkExtensions.BoxHorizontal ([
+			widthEntry,
+			widthUnitsLabel]);
 
-		private ComboBoxText preset_combo;
-		private Entry width_entry;
-		private Entry height_entry;
+		Gtk.Label heightLabel = CreateHeightLabel ();
+		Gtk.Entry heightEntry = CreateLengthEntry ();
+		Gtk.Label heightUnitsLabel = CreateUnitsLabel ();
+		Gtk.Box heightHbox = GtkExtensions.BoxHorizontal ([
+			heightEntry,
+			heightUnitsLabel]);
 
-		private RadioButton portrait_radio;
-		private RadioButton landscape_radio;
+		// Orientation Radio options
+		Gtk.Label orientationLabel = CreateOrientationLabel ();
 
-		private RadioButton white_bg_radio;
-		private RadioButton secondary_bg_radio;
-		private RadioButton trans_bg_radio;
+		Gtk.CheckButton portraitRadio = CreatePortraitRadio ();
+		Gtk.Image portraitImage = CreateOrientationIcon (Resources.Icons.OrientationPortrait);
+		Gtk.Box portraitHbox = GtkExtensions.BoxHorizontal ([
+			portraitImage,
+			portraitRadio]);
 
-		public NewImageDialog (int initialWidth, int initialHeight, BackgroundType initial_bg_type, bool isClipboardSize)
-		    : base (string.Empty, PintaCore.Chrome.MainWindow, DialogFlags.Modal, Core.GtkExtensions.DialogButtonsCancelOk ())
-		{
-			Title = Translations.GetString ("New Image");
-			WindowPosition = Gtk.WindowPosition.CenterOnParent;
+		Gtk.CheckButton landscapeRadio = CreateLandscapeRadio (portraitRadio);
+		Gtk.Image landscapeImage = CreateOrientationIcon (Resources.Icons.OrientationLandscape);
 
-			// We don't show the background color option if it's the same as "White"
-			allow_background_color = PintaCore.Palette.SecondaryColor.ToColorBgra () != ColorBgra.White;
+		Gtk.Box landscapeHbox = GtkExtensions.BoxHorizontal ([
+			landscapeImage,
+			landscapeRadio]);
 
-			BorderWidth = 4;
-			ContentArea.Spacing = 4;
+		Gtk.Box orientationVbox = GtkExtensions.BoxVertical ([
+			orientationLabel,
+			portraitHbox,
+			landscapeHbox]);
 
-			Resizable = false;
-			DefaultResponse = ResponseType.Ok;
+		// Background Color options
+		Gtk.Label backgroundLabel = CreateBackgroundLabel ();
 
-			IconName = Resources.StandardIcons.DocumentNew;
+		Gtk.CheckButton whiteBackgroundRadio = Gtk.CheckButton.NewWithLabel (Translations.GetString ("White"));
 
-			has_clipboard = isClipboardSize;
-			clipboard_size = new Gdk.Size (initialWidth, initialHeight);
+		Gtk.Image imageWhite = Gtk.Image.NewFromPixbuf (CairoExtensions.CreateColorSwatch (16, new Cairo.Color (1, 1, 1)).ToPixbuf ());
+		imageWhite.MarginEnd = 7;
 
-			InitializePresets ();
-			BuildDialog ();
+		Gtk.Box hboxWhite = GtkExtensions.BoxHorizontal ([
+			imageWhite,
+			whiteBackgroundRadio]);
 
-			if (initial_bg_type == BackgroundType.SecondaryColor && allow_background_color)
-				secondary_bg_radio.Active = true;
-			else if (initial_bg_type == BackgroundType.Transparent)
-				trans_bg_radio.Active = true;
+		Gtk.CheckButton secondaryBackgroundRadio = Gtk.CheckButton.NewWithLabel (Translations.GetString ("Background Color"));
+		secondaryBackgroundRadio.SetGroup (whiteBackgroundRadio);
+
+		Gtk.Image imageBackground = Gtk.Image.New ();
+		imageBackground.MarginEnd = 7;
+
+		Gtk.Box hboxBackground = GtkExtensions.BoxHorizontal ([
+			imageBackground,
+			secondaryBackgroundRadio]);
+
+		Gtk.CheckButton transparentBackgroundRadio = Gtk.CheckButton.NewWithLabel (Translations.GetString ("Transparent"));
+		transparentBackgroundRadio.SetGroup (secondaryBackgroundRadio);
+
+		Gtk.Image imageTransparent = Gtk.Image.NewFromPixbuf (CairoExtensions.CreateTransparentColorSwatch (16, true).ToPixbuf ());
+		imageTransparent.MarginEnd = 7;
+
+		Gtk.Box hboxTransparent = GtkExtensions.BoxHorizontal ([
+			imageTransparent,
+			transparentBackgroundRadio]);
+
+		Gtk.Box backgroundVbox = GtkExtensions.BoxVertical ([
+			backgroundLabel, hboxWhite, hboxBackground, hboxTransparent]);
+		backgroundVbox.MarginTop = 4;
+
+		// Layout table for preset, width, and height
+		Gtk.Grid layoutGrid = Gtk.Grid.New ();
+		layoutGrid.RowSpacing = 5;
+		layoutGrid.ColumnSpacing = 6;
+		layoutGrid.MarginBottom = 3;
+		layoutGrid.Attach (sizeLabel, 0, 0, 1, 1);
+		layoutGrid.Attach (presetDropdown, 1, 0, 1, 1);
+		layoutGrid.Attach (widthLabel, 0, 1, 1, 1);
+		layoutGrid.Attach (widthHbox, 1, 1, 1, 1);
+		layoutGrid.Attach (heightLabel, 0, 2, 1, 1);
+		layoutGrid.Attach (heightHbox, 1, 2, 1, 1);
+
+		// Put all the options together
+		BoxStyle spacedVertical = new (
+			orientation: Gtk.Orientation.Vertical,
+			spacing: 10);
+		Gtk.Box optionsVbox = GtkExtensions.Box (
+			spacedVertical,
+			[
+				layoutGrid,
+				orientationVbox,
+				backgroundVbox,
+			]
+		);
+
+		// Layout the preview + the options
+
+		Gtk.Label previewLabel = Gtk.Label.New (Translations.GetString ("Preview"));
+
+		PreviewArea previewBox = PreviewArea.New ();
+
+		Gtk.Box previewVbox = GtkExtensions.BoxVertical ([
+			previewLabel,
+			previewBox]);
+
+		BoxStyle spacedHorizontal = new (
+			orientation: Gtk.Orientation.Horizontal,
+			spacing: 10);
+		Gtk.Box mainHbox = GtkExtensions.Box (
+			spacedHorizontal,
+			[
+				optionsVbox,
+				previewVbox,
+			]
+		);
+
+		Gtk.Box contentArea = this.GetContentAreaBox ();
+		contentArea.SetAllMargins (8);
+		contentArea.Append (mainHbox);
+
+		// --- Initialization (Gtk.Window)
+
+		Title = Translations.GetString ("New Image");
+		Modal = true;
+		Resizable = false;
+		IconName = Resources.StandardIcons.DocumentNew;
+
+		// --- Initialization (Gtk.Dialog)
+
+		this.AddCancelOkButtons ();
+		this.SetDefaultResponse (Gtk.ResponseType.Ok);
+
+		// --- References to keep
+		preset_dropdown_model = presetDropdownModel;
+		preset_dropdown = presetDropdown;
+		width_entry = widthEntry;
+		height_entry = heightEntry;
+		portrait_radio = portraitRadio;
+		landscape_radio = landscapeRadio;
+		white_background_radio = whiteBackgroundRadio;
+		secondary_background_radio = secondaryBackgroundRadio;
+		transparent_background_radio = transparentBackgroundRadio;
+		hbox_background = hboxBackground;
+		image_background = imageBackground;
+		preview_box = previewBox;
+	}
+
+	private void Configure (
+		IChromeService chrome,
+		IPaletteService palette,
+		Size initialSize,
+		BackgroundType initialBackgroundType,
+		bool isClipboardSize)
+	{
+		TransientFor = chrome.MainWindow;
+		this.palette = palette;
+
+		// We don't show the background color option if it's the same as "White"
+		bool allowBackgroundColor = palette.SecondaryColor.ToColorBgra () != ColorBgra.White;
+		bool hasClipboard = isClipboardSize;
+
+		foreach (string preset in GeneratePresetEntries (hasClipboard))
+			preset_dropdown_model.Append (preset);
+
+		hbox_background.Visible = allowBackgroundColor;
+		image_background.SetFromPixbuf (CairoExtensions.CreateColorSwatch (16, palette.SecondaryColor).ToPixbuf ());
+
+		if (initialBackgroundType == BackgroundType.SecondaryColor && allowBackgroundColor)
+			secondary_background_radio.Active = true;
+
+		if (initialBackgroundType == BackgroundType.Transparent)
+			transparent_background_radio.Active = true;
+
+		if (initialBackgroundType == BackgroundType.White)
+			white_background_radio.Active = true;
+
+		height_entry.Buffer!.Text = initialSize.Height.ToString ();
+
+		width_entry.Buffer!.Text = initialSize.Width.ToString ();
+		width_entry.GrabFocus ();
+		width_entry.SelectRegion (0, (int) width_entry.TextLength);
+
+		has_clipboard = hasClipboard;
+		clipboard_size = initialSize;
+
+		// --- TODO: Refactor this post-initialization
+
+		WireUpEvents ();
+
+		UpdateOrientation ();
+
+		UpdatePresetSelection ();
+
+		preview_box.Update (NewImageSize, NewImageBackground);
+	}
+
+	/// <summary>
+	/// Configures and builds a NewImageDialog object.
+	/// </summary>
+	/// <param name="imgWidth">Initial value of the width entry.</param>
+	/// <param name="imgHeight">Initial value of the height entry.</param>
+	/// <param name="isClipboardSize">Indicates if there is an image on the clipboard (and the size parameters represent the clipboard image size).</param>
+	public static NewImageDialog New (
+		IChromeService chrome,
+		IPaletteService palette,
+		Size initialSize,
+		BackgroundType initialBackgroundType,
+		bool isClipboardSize)
+	{
+		NewImageDialog dialog = NewWithProperties ([]);
+		dialog.Configure (chrome, palette, initialSize, initialBackgroundType, isClipboardSize);
+		return dialog;
+	}
+
+	private static Gtk.Label CreateUnitsLabel ()
+	{
+		Gtk.Label label = Gtk.Label.New (Translations.GetString ("pixels"));
+		label.MarginStart = 5;
+		return label;
+	}
+
+	private static Gtk.Image CreateOrientationIcon (string iconName)
+	{
+		Gtk.Image image = Gtk.Image.New ();
+		image.IconName = iconName;
+		image.PixelSize = 16;
+		image.MarginEnd = 7;
+		return image;
+	}
+
+	private static Gtk.Entry CreateLengthEntry ()
+	{
+		Gtk.Entry entry = Gtk.Entry.New ();
+		entry.WidthRequest = 50;
+		entry.ActivatesDefault = true;
+		return entry;
+	}
+
+	private static Gtk.CheckButton CreatePortraitRadio ()
+		=> Gtk.CheckButton.NewWithLabel (Translations.GetString ("Portrait"));
+
+	private static Gtk.CheckButton CreateLandscapeRadio (Gtk.CheckButton portraitRadio)
+	{
+		Gtk.CheckButton result = Gtk.CheckButton.NewWithLabel (Translations.GetString ("Landscape"));
+		result.SetGroup (portraitRadio);
+		return result;
+	}
+
+	private static Gtk.Label CreateBackgroundLabel ()
+	{
+		Gtk.Label result = Gtk.Label.New (Translations.GetString ("Background:"));
+		result.Xalign = 0f;
+		result.Yalign = .5f;
+		result.MarginBottom = 4;
+		return result;
+	}
+
+	private static Gtk.Label CreateOrientationLabel ()
+	{
+		Gtk.Label result = Gtk.Label.New (Translations.GetString ("Orientation:"));
+		result.Xalign = 0f;
+		result.Yalign = .5f;
+		result.MarginBottom = 4;
+		return result;
+	}
+
+	private static Gtk.Label CreateWidthLabel ()
+	{
+		Gtk.Label result = Gtk.Label.New (Translations.GetString ("Width:"));
+		result.Xalign = 1f;
+		result.Yalign = .5f;
+		return result;
+	}
+
+	private static Gtk.Label CreateHeightLabel ()
+	{
+		Gtk.Label result = Gtk.Label.New (Translations.GetString ("Height:"));
+		result.Xalign = 1f;
+		result.Yalign = .5f;
+		return result;
+	}
+
+	private static Gtk.Label CreateSizeLabel ()
+	{
+		Gtk.Label result = Gtk.Label.New (Translations.GetString ("Preset:"));
+		result.Xalign = 1f;
+		result.Yalign = .5f;
+		return result;
+	}
+
+	// Some arbitrary presets
+	private static readonly IReadOnlyList<Size> preset_sizes = [
+		new (640, 480),
+		new (800, 600),
+		new (1024, 768),
+		new (1600, 1200),
+	];
+
+	private static IEnumerable<string> GeneratePresetEntries (bool hasClipboard)
+	{
+		if (hasClipboard)
+			yield return Translations.GetString ("Clipboard");
+
+		yield return Translations.GetString ("Custom");
+
+		foreach (Size p in preset_sizes)
+			yield return $"{p.Width} x {p.Height}";
+	}
+
+	public int NewImageWidth
+		=> int.Parse (width_entry.Buffer!.Text!);
+
+	public int NewImageHeight
+		=> int.Parse (height_entry.Buffer!.Text!);
+
+	public Size NewImageSize
+		=> new (NewImageWidth, NewImageHeight);
+
+	public BackgroundType NewImageBackgroundType {
+		get {
+			if (white_background_radio.Active)
+				return BackgroundType.White;
+			else if (transparent_background_radio.Active)
+				return BackgroundType.Transparent;
 			else
-				white_bg_radio.Active = true;
-
-			width_entry.Text = initialWidth.ToString ();
-			height_entry.Text = initialHeight.ToString ();
-
-			width_entry.GrabFocus ();
-			width_entry.SelectRegion (0, width_entry.Text.Length);
-
-			WireUpEvents ();
-
-			UpdateOrientation ();
-			UpdatePresetSelection ();
-			preview.Update (NewImageSize, NewImageBackground);
+				return BackgroundType.SecondaryColor;
 		}
+	}
 
-		public int NewImageWidth { get { return int.Parse (width_entry.Text); } }
-		public int NewImageHeight { get { return int.Parse (height_entry.Text); } }
-		public Gdk.Size NewImageSize { get { return new Gdk.Size (NewImageWidth, NewImageHeight); } }
+	public Cairo.Color NewImageBackground =>
+		NewImageBackgroundType switch {
+			BackgroundType.White => new Cairo.Color (1, 1, 1),
+			BackgroundType.Transparent => new Cairo.Color (1, 1, 1, 0),
+			_ => palette.SecondaryColor,
+		};
 
-		public enum BackgroundType
-		{
-			White,
-			Transparent,
-			SecondaryColor
+
+	private bool IsValidSize {
+		get {
+
+			if (!int.TryParse (width_entry.Buffer!.Text!, out int width))
+				return false;
+
+			if (!int.TryParse (height_entry.Buffer!.Text!, out int height))
+				return false;
+
+			return width > 0 && height > 0;
 		}
+	}
 
-		public BackgroundType NewImageBackgroundType {
-			get {
-				if (white_bg_radio.Active)
-					return BackgroundType.White;
-				else if (trans_bg_radio.Active)
-					return BackgroundType.Transparent;
-				else
-					return BackgroundType.SecondaryColor;
-			}
-		}
+	private Size GetSelectedPresetSize ()
+	{
+		string text = preset_dropdown_model.GetString (preset_dropdown.Selected)!;
+		return ExtractSelectedPresetSize (text);
+	}
 
-		public Cairo.Color NewImageBackground {
-			get {
-				switch (NewImageBackgroundType) {
-					case BackgroundType.White:
-						return new Cairo.Color (1, 1, 1);
-					case BackgroundType.Transparent:
-						return new Cairo.Color (1, 1, 1, 0);
-					case BackgroundType.SecondaryColor:
-					default:
-						return PintaCore.Palette.SecondaryColor;
-				}
-			}
-		}
+	private static Size ExtractSelectedPresetSize (string text)
+	{
+		if (text == Translations.GetString ("Clipboard") || text == Translations.GetString ("Custom"))
+			return Size.Empty;
 
+		string[] textParts = text.Split (' ');
 
-		private bool IsValidSize {
-			get {
-				int width = 0;
-				int height = 0;
+		return new (
+			int.Parse (textParts[0]),
+			int.Parse (textParts[2]));
+	}
 
-				if (!int.TryParse (width_entry.Text, out width))
-					return false;
-				if (!int.TryParse (height_entry.Text, out height))
-					return false;
+	private void WireUpEvents ()
+	{
+		// Handle preset changes
+		Gtk.DropDown.SelectedPropertyDefinition.Notify (
+			preset_dropdown,
+			(_, _) => {
+				Size new_size = IsValidSize ? NewImageSize : Size.Empty;
 
-				return width > 0 && height > 0;
-			}
-		}
-
-		private Gdk.Size SelectedPresetSize {
-			get {
-				if (preset_combo.ActiveText == Translations.GetString ("Clipboard") || preset_combo.ActiveText == Translations.GetString ("Custom"))
-					return Gdk.Size.Empty;
-
-				var text_parts = preset_combo.ActiveText.Split (' ');
-				var width = int.Parse (text_parts[0]);
-				var height = int.Parse (text_parts[2]);
-
-				return new Gdk.Size (width, height);
-			}
-		}
-
-		[MemberNotNull (nameof (preset_sizes))]
-		private void InitializePresets ()
-		{
-			// Some arbitrary presets
-			preset_sizes = new List<Gdk.Size> ();
-
-			preset_sizes.Add (new Gdk.Size (640, 480));
-			preset_sizes.Add (new Gdk.Size (800, 600));
-			preset_sizes.Add (new Gdk.Size (1024, 768));
-			preset_sizes.Add (new Gdk.Size (1600, 1200));
-		}
-
-		[MemberNotNull (nameof (preset_combo), nameof (portrait_radio), nameof (landscape_radio), nameof (white_bg_radio), nameof (secondary_bg_radio), nameof (trans_bg_radio), nameof (width_entry), nameof (height_entry), nameof (preview))]
-		private void BuildDialog ()
-		{
-			// Layout table for preset, width, and height
-			var layout_grid = new Grid ();
-
-			layout_grid.RowSpacing = 5;
-			layout_grid.ColumnSpacing = 6;
-
-			// Preset Combo
-			var size_label = new Label (Translations.GetString ("Preset:")) { Xalign = 1f, Yalign = .5f };
-
-			var preset_entries = new List<string> ();
-
-			if (has_clipboard)
-				preset_entries.Add (Translations.GetString ("Clipboard"));
-
-			preset_entries.Add (Translations.GetString ("Custom"));
-			preset_entries.AddRange (preset_sizes.Select (p => string.Format ("{0} x {1}", p.Width, p.Height)));
-
-			preset_combo = new ComboBoxText ();
-			foreach (string entry in preset_entries)
-				preset_combo.AppendText (entry);
-
-			preset_combo.Active = 0;
-
-			layout_grid.Attach (size_label, 0, 0, 1, 1);
-			layout_grid.Attach (preset_combo, 1, 0, 1, 1);
-
-			// Width Entry
-			var width_label = new Label (Translations.GetString ("Width:")) { Xalign = 1f, Yalign = .5f };
-
-			width_entry = new Entry ();
-			width_entry.WidthRequest = 50;
-			width_entry.ActivatesDefault = true;
-
-			var width_units = new Label (Translations.GetString ("pixels"));
-
-			var width_hbox = new HBox ();
-			width_hbox.PackStart (width_entry, false, false, 0);
-			width_hbox.PackStart (width_units, false, false, 5);
-
-			layout_grid.Attach (width_label, 0, 1, 1, 1);
-			layout_grid.Attach (width_hbox, 1, 1, 1, 1);
-
-			// Height Entry
-			var height_label = new Label (Translations.GetString ("Height:")) { Xalign = 1f, Yalign = .5f };
-
-			height_entry = new Entry ();
-			height_entry.WidthRequest = 50;
-			height_entry.ActivatesDefault = true;
-
-			var height_units = new Label (Translations.GetString ("pixels"));
-
-			var height_hbox = new HBox ();
-			height_hbox.PackStart (height_entry, false, false, 0);
-			height_hbox.PackStart (height_units, false, false, 5);
-
-			layout_grid.Attach (height_label, 0, 2, 1, 1);
-			layout_grid.Attach (height_hbox, 1, 2, 1, 1);
-
-			// Orientation Radio options
-			var orientation_label = new Label (Translations.GetString ("Orientation:")) { Xalign = 0f, Yalign = .5f };
-
-			portrait_radio = new RadioButton (Translations.GetString ("Portrait"));
-			var portrait_image = new Image (PintaCore.Resources.GetIcon (Stock.OrientationPortrait, 16));
-
-			var portrait_hbox = new HBox ();
-
-			portrait_hbox.PackStart (portrait_image, false, false, 7);
-			portrait_hbox.PackStart (portrait_radio, false, false, 0);
-
-			landscape_radio = new RadioButton (portrait_radio, Translations.GetString ("Landscape"));
-			var landscape_image = new Image (PintaCore.Resources.GetIcon (Stock.OrientationLandscape, 16));
-
-			var landscape_hbox = new HBox ();
-
-			landscape_hbox.PackStart (landscape_image, false, false, 7);
-			landscape_hbox.PackStart (landscape_radio, false, false, 0);
-
-			// Orientation VBox
-			var orientation_vbox = new VBox ();
-			orientation_vbox.PackStart (orientation_label, false, false, 4);
-			orientation_vbox.PackStart (portrait_hbox, false, false, 0);
-			orientation_vbox.PackStart (landscape_hbox, false, false, 0);
-
-			// Background Color options
-			var background_label = new Label (Translations.GetString ("Background:")) { Xalign = 0f, Yalign = .5f };
-
-			white_bg_radio = new RadioButton (Translations.GetString ("White"));
-			var image_white = new Image (GdkExtensions.CreateColorSwatch (16, new Gdk.Color (255, 255, 255)));
-
-			var hbox_white = new HBox ();
-
-			hbox_white.PackStart (image_white, false, false, 7);
-			hbox_white.PackStart (white_bg_radio, false, false, 0);
-
-			secondary_bg_radio = new RadioButton (white_bg_radio, Translations.GetString ("Background Color"));
-			var image_bg = new Image (GdkExtensions.CreateColorSwatch (16, PintaCore.Palette.SecondaryColor.ToGdkColor ()));
-
-			var hbox_bg = new HBox ();
-
-			hbox_bg.PackStart (image_bg, false, false, 7);
-			hbox_bg.PackStart (secondary_bg_radio, false, false, 0);
-
-			trans_bg_radio = new RadioButton (secondary_bg_radio, Translations.GetString ("Transparent"));
-			var image_trans = new Image (GdkExtensions.CreateTransparentColorSwatch (true));
-
-			var hbox_trans = new HBox ();
-
-			hbox_trans.PackStart (image_trans, false, false, 7);
-			hbox_trans.PackStart (trans_bg_radio, false, false, 0);
-
-			// Background VBox
-			var background_vbox = new VBox ();
-			background_vbox.PackStart (background_label, false, false, 4);
-			background_vbox.PackStart (hbox_white, false, false, 0);
-
-			if (allow_background_color)
-				background_vbox.PackStart (hbox_bg, false, false, 0);
-
-			background_vbox.PackStart (hbox_trans, false, false, 0);
-
-			// Put all the options together
-			var options_vbox = new VBox ();
-			options_vbox.Spacing = 10;
-
-			options_vbox.PackStart (layout_grid, false, false, 3);
-			options_vbox.PackStart (orientation_vbox, false, false, 0);
-			options_vbox.PackStart (background_vbox, false, false, 4);
-
-			// Layout the preview + the options
-			preview = new PreviewArea ();
-
-			var preview_label = new Label (Translations.GetString ("Preview"));
-
-			var preview_vbox = new VBox ();
-			preview_vbox.PackStart (preview_label, false, false, 0);
-			preview_vbox.PackStart (preview, true, true, 0);
-
-
-			var main_hbox = new HBox (false, 10);
-
-			main_hbox.PackStart (options_vbox, false, false, 0);
-			main_hbox.PackStart (preview_vbox, true, true, 0);
-
-			ContentArea.Add (main_hbox);
-
-			ShowAll ();
-		}
-
-		private void WireUpEvents ()
-		{
-			// Handle preset combo changes
-			preset_combo.Changed += (o, e) => {
-				var new_size = IsValidSize ? NewImageSize : Gdk.Size.Empty;
-
-				if (has_clipboard && preset_combo.ActiveText == Translations.GetString ("Clipboard"))
+				string? preset_text = preset_dropdown_model.GetString (preset_dropdown.Selected);
+				if (has_clipboard && preset_text == Translations.GetString ("Clipboard"))
 					new_size = clipboard_size;
-				else if (preset_combo.ActiveText == Translations.GetString ("Custom"))
+				else if (preset_text == Translations.GetString ("Custom"))
 					return;
 				else
-					new_size = SelectedPresetSize;
+					new_size = GetSelectedPresetSize ();
 
 				suppress_events = true;
-				width_entry.Text = new_size.Width.ToString ();
-				height_entry.Text = new_size.Height.ToString ();
+				width_entry.Buffer!.Text = new_size.Width.ToString ();
+				height_entry.Buffer!.Text = new_size.Height.ToString ();
 				suppress_events = false;
 
 				UpdateOkButton ();
@@ -355,181 +463,198 @@ namespace Pinta
 					return;
 
 				UpdateOrientation ();
-				preview.Update (NewImageSize);
-			};
-
-			// Handle width/height entry changes
-			width_entry.Changed += (o, e) => {
-				if (suppress_events)
-					return;
-
-				UpdateOkButton ();
-
-				if (!IsValidSize)
-					return;
-
-				if (NewImageSize != SelectedPresetSize)
-					preset_combo.Active = has_clipboard ? 1 : 0;
-
-				UpdateOrientation ();
-				UpdatePresetSelection ();
-				preview.Update (NewImageSize);
-			};
-
-			height_entry.Changed += (o, e) => {
-				if (suppress_events)
-					return;
-
-				UpdateOkButton ();
-
-				if (!IsValidSize)
-					return;
-
-				if (NewImageSize != SelectedPresetSize)
-					preset_combo.Active = has_clipboard ? 1 : 0;
-
-				UpdateOrientation ();
-				UpdatePresetSelection ();
-				preview.Update (NewImageSize);
-			};
-
-			// Handle orientation changes
-			portrait_radio.Toggled += (o, e) => {
-				if (portrait_radio.Active && IsValidSize && NewImageWidth > NewImageHeight) {
-					var temp = NewImageWidth;
-					width_entry.Text = height_entry.Text;
-					height_entry.Text = temp.ToString ();
-					preview.Update (NewImageSize);
-				}
-			};
-
-			landscape_radio.Toggled += (o, e) => {
-				if (landscape_radio.Active && IsValidSize && NewImageWidth < NewImageHeight) {
-					var temp = NewImageWidth;
-					width_entry.Text = height_entry.Text;
-					height_entry.Text = temp.ToString ();
-					preview.Update (NewImageSize);
-				}
-			};
-
-			// Handle background color changes
-			white_bg_radio.Toggled += (o, e) => { if (white_bg_radio.Active) preview.Update (new Cairo.Color (1, 1, 1)); };
-			secondary_bg_radio.Toggled += (o, e) => { if (secondary_bg_radio.Active) preview.Update (PintaCore.Palette.SecondaryColor); };
-			trans_bg_radio.Toggled += (o, e) => { if (trans_bg_radio.Active) preview.Update (new Cairo.Color (1, 1, 1, 0)); };
-		}
-
-		private void UpdateOrientation ()
-		{
-			if (NewImageWidth < NewImageHeight && !portrait_radio.Active)
-				portrait_radio.Activate ();
-			else if (NewImageWidth > NewImageHeight && !landscape_radio.Active)
-				landscape_radio.Activate ();
-
-			for (var i = 1; i < preset_combo.GetItemCount (); i++) {
-				var text = preset_combo.GetValueAt<string> (i);
-
-				if (text == Translations.GetString ("Clipboard") || text == Translations.GetString ("Custom"))
-					continue;
-
-				var text_parts = text.Split ('x');
-				var width = int.Parse (text_parts[0].Trim ());
-				var height = int.Parse (text_parts[1].Trim ());
-
-				var new_size = new Gdk.Size (NewImageWidth < NewImageHeight ? Math.Min (width, height) : Math.Max (width, height), NewImageWidth < NewImageHeight ? Math.Max (width, height) : Math.Min (width, height));
-				var new_text = string.Format ("{0} x {1}", new_size.Width, new_size.Height);
-
-				preset_combo.SetValueAt (i, new_text);
+				preview_box.Update (NewImageSize);
 			}
-		}
+		);
 
-		private void UpdateOkButton ()
-		{
-			var button = GetWidgetForResponse ((int) ResponseType.Ok);
-			button.Sensitive = IsValidSize;
-		}
+		// Handle width/height entry changes
+		width_entry.OnChanged += (o, e) => {
+			if (suppress_events)
+				return;
 
-		private void UpdatePresetSelection ()
-		{
+			UpdateOkButton ();
+
 			if (!IsValidSize)
 				return;
 
-			var text = string.Format ("{0} x {1}", NewImageWidth, NewImageHeight);
-			var index = preset_combo.FindValue (text);
+			if (NewImageSize != GetSelectedPresetSize ())
+				preset_dropdown.Selected = has_clipboard ? 1u : 0;
 
-			if (index >= 0 && preset_combo.Active != index)
-				preset_combo.Active = index;
+			UpdateOrientation ();
+			UpdatePresetSelection ();
+			preview_box.Update (NewImageSize);
+		};
+
+		height_entry.OnChanged += (o, e) => {
+			if (suppress_events)
+				return;
+
+			UpdateOkButton ();
+
+			if (!IsValidSize)
+				return;
+
+			if (NewImageSize != GetSelectedPresetSize ())
+				preset_dropdown.Selected = has_clipboard ? 1u : 0;
+
+			UpdateOrientation ();
+			UpdatePresetSelection ();
+			preview_box.Update (NewImageSize);
+		};
+
+		// Handle orientation changes
+		portrait_radio.OnToggled += (o, e) => {
+
+			if (!portrait_radio.Active || !IsValidSize || NewImageWidth <= NewImageHeight)
+				return;
+
+			int temp = NewImageWidth;
+			width_entry.Buffer!.Text = height_entry.Buffer!.Text;
+			height_entry.Buffer!.Text = temp.ToString ();
+			preview_box.Update (NewImageSize);
+		};
+
+		landscape_radio.OnToggled += (o, e) => {
+
+			if (!landscape_radio.Active || !IsValidSize || NewImageWidth >= NewImageHeight)
+				return;
+
+			int temp = NewImageWidth;
+			width_entry.Buffer!.Text = height_entry.Buffer!.Text;
+			height_entry.Buffer!.Text = temp.ToString ();
+			preview_box.Update (NewImageSize);
+		};
+
+		// Handle background color changes
+		white_background_radio.OnToggled += (o, e) => { if (white_background_radio.Active) preview_box.Update (new Cairo.Color (1, 1, 1)); };
+		secondary_background_radio.OnToggled += (o, e) => { if (secondary_background_radio.Active) preview_box.Update (palette.SecondaryColor); };
+		transparent_background_radio.OnToggled += (o, e) => { if (transparent_background_radio.Active) preview_box.Update (new Cairo.Color (1, 1, 1, 0)); };
+	}
+
+	private void UpdateOrientation ()
+	{
+		if (NewImageWidth < NewImageHeight && !portrait_radio.Active)
+			portrait_radio.Activate ();
+		else if (NewImageWidth > NewImageHeight && !landscape_radio.Active)
+			landscape_radio.Activate ();
+
+		for (uint i = 1, n = preset_dropdown_model.GetNItems (); i < n; i++) {
+
+			string text = preset_dropdown_model.GetString (i)!;
+
+			if (text == Translations.GetString ("Clipboard") || text == Translations.GetString ("Custom"))
+				continue;
+
+			string[] textParts = text.Split ('x');
+
+			int width = int.Parse (textParts[0].Trim ());
+			int height = int.Parse (textParts[1].Trim ());
+
+			Size newSize = new (
+				NewImageWidth < NewImageHeight ? Math.Min (width, height) : Math.Max (width, height),
+				NewImageWidth < NewImageHeight ? Math.Max (width, height) : Math.Min (width, height));
+
+			string newText = $"{newSize.Width} x {newSize.Height}";
+
+			if (newText != text)
+				preset_dropdown_model.Splice (i, 1, [newText]);
+		}
+	}
+
+	private void UpdateOkButton ()
+	{
+		var button = GetWidgetForResponse ((int) Gtk.ResponseType.Ok)!;
+		button.Sensitive = IsValidSize;
+	}
+
+	private void UpdatePresetSelection ()
+	{
+		if (!IsValidSize)
+			return;
+
+		string text = $"{NewImageWidth} x {NewImageHeight}";
+
+		if (preset_dropdown_model.FindString (text, out uint index) && preset_dropdown.Selected != index)
+			preset_dropdown.Selected = index;
+	}
+
+	[GObject.Subclass<Gtk.Box>]
+	internal sealed partial class PreviewArea
+	{
+		private Gtk.Picture picture = Gtk.Picture.New ();
+		private Size size;
+		private Cairo.Color color;
+
+		private const int MAX_SIZE = 250;
+
+		private static readonly Gdk.Texture transparent_pattern_texture =
+			CairoExtensions.CreateTransparentBackgroundSurface (16).ToTexture ();
+
+		public static PreviewArea New ()
+			=> NewWithProperties ([]);
+
+		partial void Initialize ()
+		{
+			WidthRequest = 300;
+			Vexpand = true;
+			Valign = Gtk.Align.Fill;
+			Hexpand = true;
+			Halign = Gtk.Align.Fill;
+
+			// Center the paintable in an expanding box so that CSS can be used to draw
+			// the drop shadow around only the canvas area.
+			picture.Name = "new-image-preview";
+			picture.ContentFit = Gtk.ContentFit.ScaleDown;
+			picture.Hexpand = true;
+			picture.Vexpand = true;
+			picture.Halign = Gtk.Align.Center;
+			picture.Valign = Gtk.Align.Center;
+
+			Append (picture);
 		}
 
-		private class PreviewArea : DrawingArea
+		public void Update (Size newSize)
+			=> Update (newSize, color);
+
+		public void Update (Cairo.Color newColor)
+			=> Update (size, newColor);
+
+		public void Update (Size newSize, Cairo.Color newColor)
 		{
-			private Gdk.Size size;
-			private Cairo.Color color;
+			size = newSize;
+			color = newColor;
 
-			private int max_size = 250;
+			Size previewSize = GetPreviewSizeForDraw (size);
 
-			public PreviewArea ()
-			{
-				WidthRequest = 300;
+			Graphene.Rect bounds = Graphene.Rect.Alloc ();
+			bounds.Init (0, 0, previewSize.Width, previewSize.Height);
+
+			Gtk.Snapshot snapshot = Gtk.Snapshot.New ();
+
+			if (color.A == 0) {
+				// Fill with transparent checkerboard pattern
+				snapshot.AppendRepeatingTexture (transparent_pattern_texture, bounds);
+			} else {
+				// Fill with selected color
+				snapshot.AppendColor (color.ToGdkRGBA (), bounds);
 			}
 
-			public void Update (Gdk.Size size)
-			{
-				this.size = size;
+			Gdk.Paintable? paintable = snapshot.ToPaintable (size: null);
+			if (paintable is not null)
+				picture.Paintable = paintable;
+		}
 
-				this.QueueDraw ();
-			}
-
-			public void Update (Cairo.Color color)
-			{
-				this.color = color;
-
-				this.QueueDraw ();
-			}
-
-			public void Update (Gdk.Size size, Cairo.Color color)
-			{
-				this.size = size;
-				this.color = color;
-
-				this.QueueDraw ();
-			}
-
-			protected override bool OnDrawn (Context cr)
-			{
-				base.OnDrawn (cr);
-
-				if (size == Gdk.Size.Empty)
-					return true;
-
-				var preview_size = Gdk.Size.Empty;
-				var widget_size = Window.GetBounds ();
-
-				// Figure out the dimensions of the preview to draw
-				if (size.Width <= max_size && size.Height <= max_size)
-					preview_size = size;
-				else if (size.Width > size.Height)
-					preview_size = new Gdk.Size (max_size, (int) (max_size / ((float) size.Width / (float) size.Height)));
-				else
-					preview_size = new Gdk.Size ((int) (max_size / ((float) size.Height / (float) size.Width)), max_size);
-
-				var r = new Cairo.Rectangle ((widget_size.Width - preview_size.Width) / 2, (widget_size.Height - preview_size.Height) / 2, preview_size.Width, preview_size.Height);
-
-				if (color.A == 0) {
-					// Fill with transparent checkerboard pattern
-					using (var pattern = CairoExtensions.CreateTransparentBackgroundPattern (16))
-						cr.FillRectangle (r, pattern);
-				} else {
-					// Fill with selected color
-					cr.FillRectangle (r, color);
-				}
-
-				// Draw our canvas drop shadow
-				cr.DrawRectangle (new Cairo.Rectangle (r.X - 1, r.Y - 1, r.Width + 2, r.Height + 2), new Cairo.Color (.5, .5, .5), 1);
-				cr.DrawRectangle (new Cairo.Rectangle (r.X - 2, r.Y - 2, r.Width + 4, r.Height + 4), new Cairo.Color (.8, .8, .8), 1);
-				cr.DrawRectangle (new Cairo.Rectangle (r.X - 3, r.Y - 3, r.Width + 6, r.Height + 6), new Cairo.Color (.9, .9, .9), 1);
-
-				return true;
-			}
+		/// <summary>
+		/// Figure out the dimensions of the preview to draw
+		/// </summary>
+		private static Size GetPreviewSizeForDraw (Size size)
+		{
+			if (size.Width <= MAX_SIZE && size.Height <= MAX_SIZE)
+				return size;
+			else if (size.Width > size.Height)
+				return new (MAX_SIZE, (int) (MAX_SIZE / (size.Width / (float) size.Height)));
+			else
+				return new ((int) (MAX_SIZE / (size.Height / (float) size.Width)), MAX_SIZE);
 		}
 	}
 }

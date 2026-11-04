@@ -29,56 +29,121 @@ using Cairo;
 
 using Pinta.Core;
 
-namespace Pinta.Tools.Brushes
+namespace Pinta.Tools.Brushes;
+
+internal sealed class SplatterBrush : BasePaintBrush
 {
-	public class SplatterBrush : BasePaintBrush
+	public override string Name
+		=> Translations.GetString ("Splatter");
+
+	public override uint MillisecondsBeforeReapply => 100;
+
+	private readonly Random random = new ();
+
+	private int size_min;
+	private int size_max;
+
+	private const string MinSizeSettingName = "splatter-brush-min-size";
+	private const string MaxSizeSettingName = "splatter-brush-max-size";
+
+	public SplatterBrush (ISettingsService settingsService)
 	{
-		public override string Name {
-			get { return Translations.GetString ("Splatter"); }
-		}
+		IntegerOption minSizeOption = new IntegerOption (
+			MinSizeSettingName,
+			1,
+			10000,
+			5,
+			Translations.GetString ("Minimum Size")
+		);
+		minSizeOption.OnValueChanged += sz => size_min = sz;
+		minSizeOption.LoadValueFromSettings (settingsService);
+		IntegerOption maxSizeOption = new IntegerOption (
+			MaxSizeSettingName,
+			1,
+			10000,
+			10,
+			Translations.GetString ("Maximum Size")
+		);
+		maxSizeOption.OnValueChanged += sz => size_max = sz;
+		maxSizeOption.LoadValueFromSettings (settingsService);
 
-		public override double StrokeAlphaMultiplier {
-			get { return 0.5; }
-		}
-
-		protected override Gdk.Rectangle OnMouseMove (Context g, Color strokeColor, ImageSurface surface,
-							      int x, int y, int lastX, int lastY)
-		{
-			int line_width = (int) g.LineWidth;
-			int size;
-
-			// we want a minimum size of 2 for the splatter (except for when the brush width is 1), since a splatter of size 1 is very small
-			if (line_width == 1) {
-				size = 1;
-			} else {
-				size = Random.Next (2, line_width);
-			}
-
-			Rectangle r = new Rectangle (x - Random.Next (-15, 15), y - Random.Next (-15, 15), size, size);
-
-			double rx = r.Width / 2;
-			double ry = r.Height / 2;
-			double cx = r.X + rx;
-			double cy = r.Y + ry;
-			double c1 = 0.552285;
-
-			g.Save ();
-
-			g.MoveTo (cx + rx, cy);
-
-			g.CurveTo (cx + rx, cy - c1 * ry, cx + c1 * rx, cy - ry, cx, cy - ry);
-			g.CurveTo (cx - c1 * rx, cy - ry, cx - rx, cy - c1 * ry, cx - rx, cy);
-			g.CurveTo (cx - rx, cy + c1 * ry, cx - c1 * rx, cy + ry, cx, cy + ry);
-			g.CurveTo (cx + c1 * rx, cy + ry, cx + rx, cy + c1 * ry, cx + rx, cy);
-
-			g.ClosePath ();
-
-			Rectangle dirty = g.StrokeExtents ();
-
-			g.Fill ();
-			g.Restore ();
-
-			return dirty.ToGdkRectangle ();
-		}
+		Options = [minSizeOption, maxSizeOption];
 	}
+
+	protected override RectangleI OnMouseMove (
+		Context g,
+		ImageSurface surface,
+		BrushStrokeArgs strokeArgs)
+	{
+		int line_width = (int) g.LineWidth;
+
+		if (size_min > size_max) {
+			size_min = size_max;
+		}
+		int size = random.Next (size_min, size_max);
+
+		PointI current = strokeArgs.CurrentPosition;
+
+		RectangleD rect = new (
+			X: current.X - random.Next (-line_width / 2, line_width / 2),
+			Y: current.Y - random.Next (-line_width / 2, line_width / 2),
+			Width: size,
+			Height: size);
+
+		PointD r = new (
+			X: rect.Width / 2,
+			Y: rect.Height / 2);
+
+		PointD c = new (
+			X: rect.X + r.X,
+			Y: rect.Y + r.Y);
+
+		const double c_1 = 0.552285;
+
+		g.Save ();
+
+		g.MoveTo (c.X + r.X, c.Y);
+
+		g.CurveTo (
+			c.X + r.X,
+			c.Y - c_1 * r.Y,
+			c.X + c_1 * r.X,
+			c.Y - r.Y,
+			c.X,
+			c.Y - r.Y);
+
+		g.CurveTo (
+			c.X - c_1 * r.X,
+			c.Y - r.Y,
+			c.X - r.X,
+			c.Y - c_1 * r.Y,
+			c.X - r.X,
+			c.Y);
+
+		g.CurveTo (
+			c.X - r.X,
+			c.Y + c_1 * r.Y,
+			c.X - c_1 * r.X,
+			c.Y + r.Y,
+			c.X,
+			c.Y + r.Y);
+
+		g.CurveTo (
+			c.X + c_1 * r.X,
+			c.Y + r.Y,
+			c.X + r.X,
+			c.Y + c_1 * r.Y,
+			c.X + r.X,
+			c.Y);
+
+		g.ClosePath ();
+
+		RectangleI dirty = g.StrokeExtents ().ToInt ();
+
+		g.Fill ();
+		g.Restore ();
+
+		return dirty;
+	}
+
 }

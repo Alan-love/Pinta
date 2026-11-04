@@ -1,35 +1,44 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net6.0</TargetFramework>
     <OutputType>WinExe</OutputType>
-    <RootNamespace>Pinta</RootNamespace>
-    <AssemblyName>Pinta</AssemblyName>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Nullable>enable</Nullable>
     <ApplicationIcon>Pinta.ico</ApplicationIcon>
-    <OutputPath>..\bin</OutputPath>
+    <OutputPath>..\build\bin</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-
-    <Version>1.8.0.0</Version>
-    <Authors>PintaProject</Authors>
-    <Company />
-    <Product />
 
     <!-- Disabled by default as it requires gettext to be installed. -->
     <BuildTranslations>false</BuildTranslations>
-
   </PropertyGroup>
+
+  <Import Project="../properties/ReferenceGirCoreAdw1.props" />
+
   <ItemGroup>
-    <PackageReference Include="GtkSharp" Version="3.24.24.34" />
+    <PackageReference Include="Tmds.DBus.Protocol" />
+    <PackageReference Include="Tmds.DBus.Generator" />
+    <PackageReference Include="Mono.Addins" />
+    <PackageReference Include="Mono.Addins.Setup" />
+    <PackageReference Include="Mono.Addins.CecilReflector" />
+    <PackageReference Include="System.CommandLine" />
   </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="dbus-xml/org.freedesktop.portal.Request.xml" Namespace="Requests.DBus" DBusGeneratorMode="Proxy" />
+    <AdditionalFiles Include="dbus-xml/org.freedesktop.portal.Screenshot.xml" Namespace="ScreenshotPortal.DBus" DBusGeneratorMode="Proxy" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Dialogs/*.ui">
+      <LogicalName>%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Pinta.Core\Pinta.Core.csproj" />
     <ProjectReference Include="..\Pinta.Docking\Pinta.Docking.csproj" />
+    <ProjectReference Include="..\Pinta.Gui.Addins\Pinta.Gui.Addins.csproj" />
     <ProjectReference Include="..\Pinta.Gui.Widgets\Pinta.Gui.Widgets.csproj" />
     <ProjectReference Include="..\Pinta.Resources\Pinta.Resources.csproj" />
-    <!-- TODO-GTK3 remove once addins are supported -->
     <ProjectReference Include="..\Pinta.Tools\Pinta.Tools.csproj" />
-    <!-- TODO-GTK3 remove once addins are supported -->
     <ProjectReference Include="..\Pinta.Effects\Pinta.Effects.csproj" />
   </ItemGroup>
 
@@ -37,6 +46,7 @@
   <ItemGroup>
     <Translation Include="../po/*.po" />
   </ItemGroup>
+
   <Target Name="CompileTranslations" BeforeTargets="Build" Condition="'$(BuildTranslations)' == 'true'" Inputs="@(Translation)" Outputs="$(OutputPath)/locale/%(Translation.Filename)/LC_MESSAGES/pinta.mo">
 
     <MakeDir Directories="$(OutputPath)/locale/%(Translation.Filename)/LC_MESSAGES" />
@@ -47,4 +57,7 @@
   <Target Name="PublishTranslations" AfterTargets="Publish" Condition="'$(BuildTranslations)' == 'true'">
     <Copy SourceFiles="$(OutputPath)/locale/%(Translation.Filename)/LC_MESSAGES/pinta.mo" DestinationFiles="$(PublishDir)/locale/%(Translation.Filename)/LC_MESSAGES/pinta.mo" />
   </Target>
+
+  <!-- For Windows, copy GTK library dependencies to the build folder. -->
+  <Import Condition="$([MSBuild]::IsOSPlatform('Windows'))" Project="../installer/windows/bundle_gtk.targets" />
 </Project>

@@ -1,21 +1,21 @@
-// 
+//
 // LayersPad.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2011 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,47 +24,60 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using Gtk;
 using Pinta.Core;
 using Pinta.Docking;
 using Pinta.Gui.Widgets;
 
-namespace Pinta
+namespace Pinta;
+
+internal sealed class LayersPad : IDockPad
 {
-	public class LayersPad : IDockPad
+	private readonly LayerActions layer_actions;
+	internal LayersPad (LayerActions layerActions)
 	{
-		public void Initialize (Dock workspace, Application app, GLib.Menu padMenu)
-		{
-			var layers = new LayersListWidget ();
-			DockItem layers_item = new DockItem (layers, "Layers") {
-				Label = Translations.GetString ("Layers")
-			};
+		layer_actions = layerActions;
+	}
 
-			var layers_tb = layers_item.AddToolBar ();
-			layers_tb.Add (PintaCore.Actions.Layers.AddNewLayer.CreateDockToolBarItem ());
-			layers_tb.Add (PintaCore.Actions.Layers.DeleteLayer.CreateDockToolBarItem ());
-			layers_tb.Add (PintaCore.Actions.Layers.DuplicateLayer.CreateDockToolBarItem ());
-			layers_tb.Add (PintaCore.Actions.Layers.MergeLayerDown.CreateDockToolBarItem ());
-			layers_tb.Add (PintaCore.Actions.Layers.MoveLayerUp.CreateDockToolBarItem ());
-			layers_tb.Add (PintaCore.Actions.Layers.MoveLayerDown.CreateDockToolBarItem ());
+	public void Initialize (Dock workspace)
+	{
+		LayersListView layers = LayersListView.New ();
+		DockItem layers_item = DockItem.New (
+			child: layers,
+			uniqueName: "Layers",
+			iconName: Resources.Icons.LayerDuplicate
+		);
+		layers_item.Label = Translations.GetString ("Layers");
 
-			// TODO-GTK3 (docking)
-#if false
+		Gio.Menu hamburger_menu = Gio.Menu.New ();
 
-			layers_item.Icon = Gtk.IconTheme.Default.LoadIcon(Resources.Icons.LayerMergeDown, 16);
-			layers_item.DefaultWidth = 100;
-			layers_item.Behavior |= DockItemBehavior.CantClose;
-#endif
-			workspace.AddItem (layers_item, DockPlacement.Right);
+		Gio.Menu flip_section = Gio.Menu.New ();
+		flip_section.AppendItem (layer_actions.FlipHorizontal.CreateMenuItem ());
+		flip_section.AppendItem (layer_actions.FlipVertical.CreateMenuItem ());
+		flip_section.AppendItem (layer_actions.RotateZoom.CreateMenuItem ());
 
-			var show_layers = new ToggleCommand ("layers", Translations.GetString ("Layers"), null, Resources.Icons.LayerMergeDown) {
-				Value = true
-			};
-			app.AddAction (show_layers);
-			padMenu.AppendItem (show_layers.CreateMenuItem ());
+		Gio.Menu prop_section = Gio.Menu.New ();
+		prop_section.AppendItem (layer_actions.Properties.CreateMenuItem ());
 
-			show_layers.Toggled += (val) => { layers_item.Visible = val; };
-			layers_item.VisibilityNotifyEvent += (o, args) => { show_layers.Value = layers_item.Visible; };
-		}
+		hamburger_menu.AppendItem (layer_actions.ImportFromFile.CreateMenuItem ());
+		hamburger_menu.AppendSection (null, flip_section);
+		hamburger_menu.AppendSection (null, prop_section);
+
+		Gtk.MenuButton hamburger_button = GtkExtensions.CreateMenuButton (
+			hamburger_menu, Resources.StandardIcons.OpenMenu);
+
+		hamburger_button.Direction = Gtk.ArrowType.Up;
+
+		Gtk.Box layers_tb = layers_item.AddToolBar ();
+		layers_tb.AppendMultiple ([
+			layer_actions.AddNewLayer.CreateDockToolBarItem (),
+			layer_actions.DeleteLayer.CreateDockToolBarItem (),
+			layer_actions.DuplicateLayer.CreateDockToolBarItem (),
+			layer_actions.MergeLayerDown.CreateDockToolBarItem (),
+			layer_actions.MoveLayerUp.CreateDockToolBarItem (),
+			layer_actions.MoveLayerDown.CreateDockToolBarItem (),
+			hamburger_button
+		]);
+
+		workspace.AddItem (layers_item, DockPlacement.Right);
 	}
 }

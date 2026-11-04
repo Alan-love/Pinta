@@ -1,21 +1,21 @@
-// 
+//
 // ResizeCanvasAction.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,35 +25,56 @@
 // THE SOFTWARE.
 
 using System;
-using Gtk;
+using System.Threading.Tasks;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class ResizeCanvasAction : IActionHandler
 {
-	class ResizeCanvasAction : IActionHandler
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	private readonly ISettingsService settings;
+	private readonly ActionManager actions;
+	internal ResizeCanvasAction (
+		IChromeService chrome,
+		IWorkspaceService workspace,
+		ISettingsService settings,
+		ActionManager actions)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.Image.CanvasSize.Activated += Activated;
-		}
+		this.chrome = chrome;
+		this.workspace = workspace;
+		this.settings = settings;
+		this.actions = actions;
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.Image.CanvasSize.Activated -= Activated;
-		}
-		#endregion
+	void IActionHandler.Initialize ()
+	{
+		actions.Image.CanvasSize.Activated += Activated;
+	}
 
-		private void Activated (object sender, EventArgs e)
-		{
-			using var dialog = new ResizeCanvasDialog ();
+	void IActionHandler.Uninitialize ()
+	{
+		actions.Image.CanvasSize.Activated -= Activated;
+	}
 
-			dialog.WindowPosition = Gtk.WindowPosition.CenterOnParent;
+	private async void Activated (object sender, EventArgs e)
+	{
+		ResizeCanvasOptions? response = await PromptResize ();
+		if (!response.HasValue) return;
+		ResizeCanvasOptions resizing = response.Value;
+		workspace.ResizeCanvas (resizing.NewSize, resizing.Anchor, resizing.CompoundAction);
+	}
 
-			int response = dialog.Run ();
-
-			if (response == (int) Gtk.ResponseType.Ok)
-				dialog.SaveChanges ();
+	private async Task<ResizeCanvasOptions?> PromptResize ()
+	{
+		using ResizeCanvasDialog dialog = ResizeCanvasDialog.New (chrome, workspace, settings);
+		try {
+			Gtk.ResponseType response = await dialog.RunAsync ();
+			if (response != Gtk.ResponseType.Ok) return null;
+			return dialog.GetResizeCanvasOptions ();
+		} finally {
+			dialog.Destroy ();
 		}
 	}
 }

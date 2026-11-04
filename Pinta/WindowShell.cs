@@ -24,88 +24,93 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using System.Linq;
-using Gtk;
+using Pinta.Core;
 
-namespace Pinta
+namespace Pinta;
+
+public sealed class WindowShell
 {
-	public class WindowShell : ApplicationWindow
+	private readonly Gtk.ApplicationWindow app_window;
+	private readonly Adw.HeaderBar? header_bar;
+	private readonly Gtk.Box shell_layout;
+	private Gtk.Box? workspace_layout;
+	private Gtk.Box? main_toolbar;
+
+	public WindowShell (
+		Gtk.Application app,
+		string name,
+		string title,
+		int width,
+		int height,
+		bool useMenuBar,
+		bool maximize)
 	{
-		private VBox shell_layout;
-		private VBox menu_layout;
-		private HBox? workspace_layout;
+		var app_layout = Adw.ToolbarView.New ();
 
-		private Toolbar? main_toolbar;
+		if (!useMenuBar) {
+			var adwWindow = Adw.ApplicationWindow.New (app);
+			adwWindow.SetContent (app_layout);
+			app_window = adwWindow;
 
-		public WindowShell (Application app, string name, string title, int width, int height, bool maximize) : base (app)
-		{
-			Name = name;
-			Title = title;
-			DefaultWidth = width;
-			DefaultHeight = height;
-
-			WindowPosition = WindowPosition.Center;
-			Resizable = true;
-
-			if (maximize)
-				Maximize ();
-
-			shell_layout = new VBox () { Name = "shell_layout" };
-			menu_layout = new VBox () { Name = "menu_layout" };
-
-			shell_layout.PackStart (menu_layout, false, false, 0);
-
-			Add (shell_layout);
-
-			shell_layout.ShowAll ();
+			header_bar = Adw.HeaderBar.New ();
+			app_layout.AddTopBar (header_bar);
+		} else {
+			// If the header bar isn't being used, we use a regular Gtk.ApplicationWindow
+			// to have a traditional titlebar with the standard close / minimize buttons,
+			// and a menubar in the window unless a global menu is used (e.g. macOS)
+			app_window = Gtk.ApplicationWindow.New (app);
+			app_window.ShowMenubar = true;
+			app_window.SetChild (app_layout);
 		}
 
-		public Toolbar CreateToolBar (string name)
-		{
-			main_toolbar = new Toolbar ();
-			main_toolbar.Name = name;
+		app_window.Name = name;
+		app_window.Title = title;
+		app_window.DefaultWidth = width;
+		app_window.DefaultHeight = height;
+		app_window.Resizable = true;
 
-			menu_layout.PackStart (main_toolbar, false, false, 0);
-			main_toolbar.Show ();
+		if (maximize)
+			app_window.Maximize ();
 
-			return main_toolbar;
-		}
+		shell_layout = Gtk.Box.New (Gtk.Orientation.Vertical, 0);
+		app_layout.SetContent (shell_layout);
 
-		public Statusbar CreateStatusBar (string name)
-		{
-			var statusbar = new Statusbar {
-				Name = name,
-				Padding = 0,
-				Margin = 0
-			};
+		app_window.Present ();
+	}
 
-			// Remove the default text area
-			var child = statusbar.Children.FirstOrDefault ();
+	public Gtk.ApplicationWindow Window => app_window;
+	public Adw.HeaderBar? HeaderBar => header_bar;
 
-			if (child != null)
-				statusbar.Remove (child);
+	public Gtk.Box CreateToolBar (string name)
+	{
+		main_toolbar = GtkExtensions.CreateToolBar ();
+		main_toolbar.Name = name;
 
-			shell_layout.PackEnd (statusbar, false, false, 0);
-			statusbar.Show ();
+		shell_layout.Append (main_toolbar);
+		main_toolbar.Show ();
 
-			return statusbar;
-		}
+		return main_toolbar;
+	}
 
-		public HBox CreateWorkspace ()
-		{
-			workspace_layout = new HBox ();
-			workspace_layout.Name = "workspace_layout";
+	public Gtk.Box CreateStatusBar (string name)
+	{
+		var statusbar = GtkExtensions.CreateToolBar ();
+		statusbar.Name = name;
 
-			shell_layout.PackStart (workspace_layout, true, true, 0);
-			workspace_layout.ShowAll ();
+		shell_layout.Append (statusbar);
 
-			return workspace_layout;
-		}
+		return statusbar;
+	}
 
-		public void AddDragDropSupport (params TargetEntry[] entries)
-		{
-			Gtk.Drag.DestSet (this, Gtk.DestDefaults.Motion | Gtk.DestDefaults.Highlight | Gtk.DestDefaults.Drop, entries, Gdk.DragAction.Copy);
-		}
+	public Gtk.Box CreateWorkspace ()
+	{
+		workspace_layout = Gtk.Box.New (Gtk.Orientation.Horizontal, 0);
+		workspace_layout.Name = "workspace_layout";
+		workspace_layout.Hexpand = true;
+		workspace_layout.Halign = Gtk.Align.Fill;
+
+		shell_layout.Append (workspace_layout);
+
+		return workspace_layout;
 	}
 }

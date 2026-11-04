@@ -1,19 +1,19 @@
-//  
+//
 // Author:
 //       Cameron White <cameronwhite91@gmail.com>
-// 
+//
 // Copyright (c) 2020 Cameron White
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,107 +25,152 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
-using Gtk;
+using Pinta.Core;
 
-namespace Pinta.Docking
+namespace Pinta.Docking;
+
+public sealed class TabClosedEventArgs (IDockNotebookItem item) : CancelEventArgs
 {
-	public class TabClosedEventArgs : CancelEventArgs
-	{
-		public TabClosedEventArgs (IDockNotebookItem item) { Item = item; }
+	public IDockNotebookItem Item { get; } = item;
+}
 
-		public IDockNotebookItem Item { get; private set; }
+public sealed class TabEventArgs (IDockNotebookItem? item) : EventArgs
+{
+	public IDockNotebookItem? Item { get; } = item;
+}
+
+[GObject.Subclass<Gtk.Box>]
+public sealed partial class DockNotebook
+{
+	private Adw.TabView tab_view;
+	private Adw.TabBar tab_bar;
+	private readonly HashSet<IDockNotebookItem> items = [];
+
+	[MemberNotNull (nameof (tab_view))]
+	[MemberNotNull (nameof (tab_bar))]
+	partial void Initialize ()
+	{
+		Adw.TabView tabView = Adw.TabView.New ();
+		tabView.Vexpand = true;
+		tabView.Valign = Gtk.Align.Fill;
+		tabView.OnClosePage += TabView_OnClosePage;
+
+		Adw.TabBar tabBar = Adw.TabBar.New ();
+		tabBar.SetView (tabView);
+		tabBar.Autohide = true;
+		tabBar.AddCssClass (AdwaitaStyles.Inline);
+		tabBar.ExpandTabs = true;
+
+		// --- Initialization (Gtk.Box)
+
+		SetOrientation (Gtk.Orientation.Vertical);
+
+		Append (tabBar);
+		Append (tabView);
+
+		// --- References to keep
+
+		tab_view = tabView;
+		tab_bar = tabBar;
+
+		// --- Further initialization
+
+		// Emit an event when the current tab is changed.
+		Adw.TabView.SelectedPagePropertyDefinition.Notify (tabView, TabView_TabChanged);
 	}
 
-	public class TabEventArgs : EventArgs
-	{
-		public TabEventArgs (IDockNotebookItem? item) { Item = item; }
+	public static DockNotebook New () => NewWithProperties ([]);
 
-		public IDockNotebookItem? Item { get; private set; }
+	private void TabView_TabChanged (GObject.Object _, NotifySignalArgs __)
+	{
+		Adw.TabPage? page = tab_view.SelectedPage;
+		IDockNotebookItem? item = FindItemForPage (page);
+		ActiveTabChanged?.Invoke (this, new TabEventArgs (item));
 	}
 
-	public class DockNotebook : Gtk.Notebook
+	private bool TabView_OnClosePage (Adw.TabView _, Adw.TabView.ClosePageSignalArgs args)
 	{
-		private HashSet<IDockNotebookItem> items = new HashSet<IDockNotebookItem> ();
+		// Prompt the user to save unsaved changes before closing.
 
-		// TODO-GTK3 (docking) - add support for dragging tabs into separate notebooks?
+		Adw.TabPage page = args.Page;
 
-		public DockNotebook ()
-		{
-			// Emit an event when the current tab is changed.
-			SwitchPage += (o, args) => {
-				var widget = args.Page;
-				IDockNotebookItem? item = items.Where (i => i.Widget == widget).FirstOrDefault ();
-				ActiveTabChanged?.Invoke (this, new TabEventArgs (item));
-			};
-		}
+		IDockNotebookItem item = FindItemForPage (page)!;
 
-		/// <summary>
-		/// Emitted when a tab is closed by the user.
-		/// </summary>
-		public event EventHandler<TabClosedEventArgs>? TabClosed;
+		TabClosedEventArgs close_args = new (item);
 
-		/// <summary>
-		/// Emitted when switching to a different tab.
-		/// </summary>
-		public event EventHandler<TabEventArgs>? ActiveTabChanged;
+		TabClosed?.Invoke (this, close_args);
 
-		/// <summary>
-		/// The items currently in the notebook.
-		/// </summary>
-		public IEnumerable<IDockNotebookItem> Items { get { return items; } }
+		tab_view.ClosePageFinish (page, !close_args.Cancel);
 
-		/// <summary>
-		/// Returns the active notebook item.
-		/// </summary>
-		public IDockNotebookItem? ActiveItem {
-			get {
-				var current = CurrentPageWidget;
-				return items.Where (i => i.Widget == current).FirstOrDefault ();
-			}
-			set {
-				var idx = PageNum (value!.Widget);
-				if (idx >= 0)
-					CurrentPage = idx;
-			}
-		}
-
-		public void InsertTab (IDockNotebookItem item, int position)
-		{
-			var tab_layout = new HBox ();
-			var label_widget = new Label (item.Label);
-			item.LabelChanged += (o, args) => { label_widget.Text = item.Label; };
-
-			var close_button = new Button ("window-close-symbolic", IconSize.SmallToolbar) {
-				Relief = ReliefStyle.None
-			};
-			close_button.Clicked += (sender, args) => {
-				var e = new TabClosedEventArgs (item);
-
-				TabClosed?.Invoke (this, e);
-				if (!e.Cancel && PageNum (item.Widget) >= 0)
-					RemoveTab (item);
-			};
-
-			tab_layout.PackStart (label_widget, false, false, 0);
-			tab_layout.PackStart (close_button, false, false, 0);
-			tab_layout.ShowAll ();
-
-			InsertPage (item.Widget, tab_layout, position);
-			SetTabReorderable (item.Widget, true);
-
-			items.Add (item);
-		}
-
-		public void RemoveTab (IDockNotebookItem item)
-		{
-			int idx = PageNum (item.Widget);
-			if (idx < 0)
-				throw new ArgumentException ("The item is not in the notebook", nameof (item));
-
-			RemovePage (idx);
-
+		if (!close_args.Cancel)
 			items.Remove (item);
+
+		// Prevent the default close handler from running.
+		return Gdk.Constants.EVENT_STOP;
+	}
+
+	/// <summary>
+	/// Emitted when a tab is closed by the user.
+	/// </summary>
+	public event EventHandler<TabClosedEventArgs>? TabClosed;
+
+	/// <summary>
+	/// Emitted when switching to a different tab.
+	/// </summary>
+	public event EventHandler<TabEventArgs>? ActiveTabChanged;
+
+	/// <summary>
+	/// The items currently in the notebook.
+	/// </summary>
+	public IEnumerable<IDockNotebookItem> Items => items;
+
+	/// <summary>
+	/// Whether to show the tab bar.
+	/// </summary>
+	public bool EnableTabs {
+		get => tab_bar.IsVisible ();
+		set {
+			if (value)
+				tab_bar.Show ();
+			else
+				tab_bar.Hide ();
 		}
 	}
+
+	/// <summary>
+	/// Returns the active notebook item.
+	/// </summary>
+	public IDockNotebookItem? ActiveItem {
+		get => FindItemForPage (tab_view.SelectedPage);
+		set => tab_view.SelectedPage = tab_view.GetPage (value!.Widget);
+	}
+
+	/// <summary>
+	/// Returns the index of the active item.
+	/// </summary>
+	public int ActiveItemIndex => tab_view.SelectedPage switch {
+		null => -1,
+		var page => tab_view.GetPagePosition (page)
+	};
+
+	public void InsertTab (IDockNotebookItem item, int position)
+	{
+		items.Add (item);
+
+		Adw.TabPage page = tab_view.Insert (item.Widget, position);
+		page.Title = item.Label;
+		// Update the tab's label when the document's title changes.
+		item.LabelChanged += (o, args) => { page.Title = item.Label; };
+	}
+
+	public void RemoveTab (IDockNotebookItem item)
+	{
+		Adw.TabPage page = tab_view.GetPage (item.Widget);
+		tab_view.ClosePage (page);
+		items.Remove (item);
+	}
+
+	private IDockNotebookItem? FindItemForPage (Adw.TabPage? page) => items.Where (i => i.Widget == page?.Child).FirstOrDefault ();
 }

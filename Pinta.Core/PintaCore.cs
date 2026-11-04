@@ -1,21 +1,21 @@
-// 
+//
 // PintaCore.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,67 +24,111 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using Gtk;
-using Pinta.Resources;
+namespace Pinta.Core;
 
-namespace Pinta.Core
+public static class PintaCore
 {
-	public static class PintaCore
+	public static ActionManager Actions { get; }
+	public static ChromeManager Chrome { get; }
+	public static EffectsManager Effects { get; }
+	public static ImageConverterManager ImageFormats { get; }
+	public static IServiceManager Services { get; }
+	public static LivePreviewManager LivePreview { get; }
+	public static PaintBrushManager PaintBrushes { get; }
+	public static PaletteFormatManager PaletteFormats { get; }
+	public static PaletteManager Palette { get; }
+	public static RecentFileManager RecentFiles { get; }
+	public static ResourceManager Resources { get; }
+	public static SettingsManager Settings { get; }
+	public static SystemManager System { get; }
+	public static ToolManager Tools { get; }
+	public static WorkspaceManager Workspace { get; }
+	public static CanvasGridManager CanvasGrid { get; }
+
+	/// <summary>
+	/// Unique identifier for the application.
+	/// This is used for GApplication and also must match the .desktop file.
+	/// </summary>
+	public const string ApplicationId = "com.github.PintaProject.Pinta";
+
+	/// <summary>
+	/// The current version number of Pinta.
+	/// </summary>
+	public const string ApplicationVersion = "3.2";
+
+	/// <summary>
+	/// The oldest version of Pinta for which add-ins built against it will still
+	/// run in the current version.
+	/// This should be updated when there are ABI-breaking changes.
+	/// </summary>
+	public const string AddinCompatVersion = "3.1";
+
+	static PintaCore ()
 	{
-		public static LayerManager Layers { get; private set; }
-		public static PaintBrushManager PaintBrushes { get; private set; }
-		public static ToolManager Tools { get; private set; }
-		public static ChromeManager Chrome { get; private set; }
-		public static PaletteManager Palette { get; private set; }
-		public static ResourceManager Resources { get; private set; }
-		public static ActionManager Actions { get; private set; }
-		public static WorkspaceManager Workspace { get; private set; }
-		public static SystemManager System { get; private set; }
-		public static LivePreviewManager LivePreview { get; private set; }
-		public static SettingsManager Settings { get; private set; }
-		public static EffectsManager Effects { get; private set; }
-		public static IServiceManager Services { get; }
+		// --- Services that don't depend on other services
 
-		public const string ApplicationVersion = "1.8";
+		ResourceManager resources = new ();
+		SystemManager system = new ();
+		SettingsManager settings = new ();
+		ChromeManager chrome = new ();
+		PaintBrushManager paintBrushes = new ();
+		PaletteFormatManager paletteFormats = new ();
+		RecentFileManager recentFiles = new ();
 
-		static PintaCore ()
-		{
-			// Resources and Settings are intialized first so later
-			// Managers can access them as needed.
-			Resources = new ResourceManager ();
-			Settings = new SettingsManager ();
+		// --- Services that depend on other services
 
-			Actions = new ActionManager ();
-			Workspace = new WorkspaceManager ();
-			Layers = new LayerManager ();
-			PaintBrushes = new PaintBrushManager ();
-			Tools = new ToolManager ();
-			System = new SystemManager ();
-			LivePreview = new LivePreviewManager ();
-			Palette = new PaletteManager ();
-			Chrome = new ChromeManager ();
-			Effects = new EffectsManager ();
+		ImageConverterManager imageFormats = new (settings);
+		WorkspaceManager workspace = new (system, chrome, imageFormats);
+		ToolManager tools = new (workspace, chrome);
+		PaletteManager palette = new (settings, paletteFormats);
+		ActionManager actions = new (chrome, imageFormats, paletteFormats, palette, recentFiles, system, tools, workspace);
+		LivePreviewManager livePreview = new (workspace, tools, system, chrome);
+		EffectsManager effects = new (actions, chrome, livePreview);
+		CanvasGridManager canvasGrid = new (workspace, settings);
 
-			Services = new ServiceManager ();
+		// --- Service manager
 
-			Services.AddService<IResourceService> (Resources);
-			Services.AddService<ISettingsService> (Settings);
-			Services.AddService (Actions);
-			Services.AddService<IWorkspaceService> (Workspace);
-			Services.AddService (Layers);
-			Services.AddService<IPaintBrushService> (PaintBrushes);
-			Services.AddService<IToolService> (Tools);
-			Services.AddService (System);
-			Services.AddService (LivePreview);
-			Services.AddService<IPaletteService> (Palette);
-			Services.AddService (Chrome);
-			Services.AddService (Effects);
-		}
+		ServiceManager services = new ();
+		services.AddService<IResourceService> (resources);
+		services.AddService<ISettingsService> (settings);
+		services.AddService (actions);
+		services.AddService<IWorkspaceService> (workspace);
+		services.AddService<IPaintBrushService> (paintBrushes);
+		services.AddService<IToolService> (tools);
+		services.AddService (imageFormats);
+		services.AddService (paletteFormats);
+		services.AddService (system);
+		services.AddService (recentFiles);
+		services.AddService<ILivePreview> (livePreview);
+		services.AddService<IPaletteService> (palette);
+		services.AddService<IChromeService> (chrome);
+		services.AddService<ISystemService> (system);
+		services.AddService (effects);
+		services.AddService<ICanvasGridService> (canvasGrid);
 
-		public static void Initialize ()
-		{
-			Actions.RegisterHandlers ();
-		}
+		// --- References to expose
+
+		Resources = resources;
+		System = system;
+		Settings = settings;
+		Actions = actions;
+		Workspace = workspace;
+		PaintBrushes = paintBrushes;
+		Tools = tools;
+		ImageFormats = imageFormats;
+		PaletteFormats = paletteFormats;
+		RecentFiles = recentFiles;
+		LivePreview = livePreview;
+		Palette = palette;
+		Chrome = chrome;
+		Effects = effects;
+		CanvasGrid = canvasGrid;
+
+		Services = services;
+	}
+
+	public static void Initialize ()
+	{
+		Actions.RegisterHandlers ();
 	}
 }

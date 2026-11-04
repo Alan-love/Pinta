@@ -10,127 +10,130 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class CurvesEffect : BaseEffect
 {
-	public class CurvesEffect : BaseEffect
+	UnaryPixelOp? op = null;
+
+	public sealed override bool IsTileable => true;
+
+	public override string Icon => Pinta.Resources.Icons.AdjustmentsCurves;
+
+	public override string Name => Translations.GetString ("Curves");
+
+	public override bool IsConfigurable => true;
+
+	public override string AdjustmentMenuKey => "M";
+
+	public CurvesData Data => (CurvesData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+
+	public CurvesEffect (IServiceProvider services)
 	{
-		UnaryPixelOp? op = null;
+		chrome = services.GetService<IChromeService> ();
 
-		public override string Icon {
-			get { return "Menu.Adjustments.Curves.png"; }
-		}
-
-		public override string Name {
-			get { return Translations.GetString ("Curves"); }
-		}
-
-		public override bool IsConfigurable {
-			get { return true; }
-		}
-
-		public override string AdjustmentMenuKey {
-			get { return "M"; }
-		}
-
-		public CurvesData Data { get { return (CurvesData) EffectData!; } } // NRT - Set in constructor
-
-		public CurvesEffect ()
-		{
-			EffectData = new CurvesData ();
-		}
-
-		public override bool LaunchConfiguration ()
-		{
-			using (var dialog = new CurvesDialog (Data)) {
-				dialog.Title = Name;
-				dialog.Icon = PintaCore.Resources.GetIcon (Icon);
-
-				int response = dialog.Run ();
-
-				return (response == (int) Gtk.ResponseType.Ok);
-			}
-		}
-
-		public override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			if (Data.ControlPoints == null)
-				return;
-
-			if (op == null)
-				op = MakeUop ();
-
-			op.Apply (dest, src, rois);
-		}
-
-		private UnaryPixelOp MakeUop ()
-		{
-			UnaryPixelOp op;
-			byte[][] transferCurves;
-			int entries;
-
-			switch (Data.Mode) {
-				case ColorTransferMode.Rgb:
-					UnaryPixelOps.ChannelCurve cc = new UnaryPixelOps.ChannelCurve ();
-					transferCurves = new byte[][] { cc.CurveR, cc.CurveG, cc.CurveB };
-					entries = 256;
-					op = cc;
-					break;
-
-				case ColorTransferMode.Luminosity:
-					UnaryPixelOps.LuminosityCurve lc = new UnaryPixelOps.LuminosityCurve ();
-					transferCurves = new byte[][] { lc.Curve };
-					entries = 256;
-					op = lc;
-					break;
-
-				default:
-					throw new InvalidEnumArgumentException ();
-			}
-
-
-			int channels = transferCurves.Length;
-
-			for (int channel = 0; channel < channels; channel++) {
-				SortedList<int, int> channelControlPoints = Data.ControlPoints![channel]; // NRT - Code expects this to be not-null
-				IList<int> xa = channelControlPoints.Keys;
-				IList<int> ya = channelControlPoints.Values;
-				SplineInterpolator interpolator = new SplineInterpolator ();
-				int length = channelControlPoints.Count;
-
-				for (int i = 0; i < length; i++) {
-					interpolator.Add (xa[i], ya[i]);
-				}
-
-				for (int i = 0; i < entries; i++) {
-					transferCurves[channel][i] = Utility.ClampToByte (interpolator.Interpolate (i));
-				}
-			}
-
-			return op;
-		}
+		EffectData = new CurvesData ();
 	}
 
-	public class CurvesData : EffectData
+	public override async Task<bool> LaunchConfiguration ()
 	{
-		public SortedList<int, int>[]? ControlPoints { get; set; }
+		// TODO: Delegate `EffectData` changes to event handlers or similar
+		using CurvesDialog dialog = CurvesDialog.New (chrome, Data);
+		dialog.Title = Name;
+		dialog.IconName = Icon;
 
-		public ColorTransferMode Mode { get; set; }
+		Gtk.ResponseType response = await dialog.RunAsync ();
 
-		public override EffectData Clone ()
-		{
-			//			Not sure if we have to copy contents of ControlPoints
-			//			var controlPoints = new SortedList<int, int> [ControlPoints.Length];
-			//			
-			//			for (int i = 0; i < ControlPoints.Length; i++)
-			//				controlPoints[i] = new SortedList<int, int> (ControlPoints[i]);
+		dialog.Destroy ();
 
-			return new CurvesData () {
-				Mode = Mode,
-				ControlPoints = ControlPoints
-			};
+		return Gtk.ResponseType.Ok == response;
+	}
+
+	public override void Render (ImageSurface src, ImageSurface dest, ReadOnlySpan<RectangleI> rois)
+	{
+		if (Data.ControlPoints == null)
+			return;
+
+		op ??= MakeUop ();
+
+		op.Apply (dest, src, rois);
+	}
+
+	private UnaryPixelOp MakeUop ()
+	{
+		UnaryPixelOp op;
+		byte[][] transferCurves;
+		int entries;
+
+		switch (Data.Mode) {
+			case ColorTransferMode.Rgb:
+				UnaryPixelOps.ChannelCurve cc = new UnaryPixelOps.ChannelCurve ();
+				transferCurves = [cc.CurveR, cc.CurveG, cc.CurveB];
+				entries = 256;
+				op = cc;
+				break;
+
+			case ColorTransferMode.Luminosity:
+				UnaryPixelOps.LuminosityCurve lc = new UnaryPixelOps.LuminosityCurve ();
+				transferCurves = [lc.Curve];
+				entries = 256;
+				op = lc;
+				break;
+
+			default:
+				throw new InvalidEnumArgumentException ();
 		}
+
+
+		int channels = transferCurves.Length;
+
+		for (int channel = 0; channel < channels; channel++) {
+
+			SortedList<int, int> channelControlPoints = Data.ControlPoints![channel]; // NRT - Code expects this to be not-null
+
+			IList<int> xa = channelControlPoints.Keys;
+			IList<int> ya = channelControlPoints.Values;
+
+			SplineInterpolator<double> interpolator = new ();
+
+			int length = channelControlPoints.Count;
+
+			for (int i = 0; i < length; i++) {
+				interpolator.Add (xa[i], ya[i]);
+			}
+
+			for (int i = 0; i < entries; i++) {
+				transferCurves[channel][i] = Utility.ClampToByte (interpolator.Interpolate (i));
+			}
+		}
+
+		return op;
+	}
+}
+
+public sealed class CurvesData : EffectData
+{
+	public SortedList<int, int>[]? ControlPoints { get; set; }
+	public ColorTransferMode Mode { get; set; }
+
+	private SortedList<int, int>[]? CloneControlPoints ()
+	{
+		if (ControlPoints is null) return null;
+		return [.. ControlPoints.Select (list => new SortedList<int, int> (list))];
+	}
+
+	public override CurvesData Clone ()
+	{
+		return new () {
+			Mode = Mode,
+			ControlPoints = CloneControlPoints (), // Dialog modifies them
+		};
 	}
 }

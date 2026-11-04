@@ -9,113 +9,177 @@
 
 using System;
 using System.Collections.Generic;
-using Cairo;
+using System.Diagnostics;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public static class OtherExtensions
 {
-	public static class OtherExtensions
+	public static IEnumerable<RectangleI> ToRows (this RectangleI original)
 	{
-		public static bool In<T> (this T enumeration, params T[] values)
-		{
-			if (enumeration is null)
-				return false;
+		if (original.Height < 0) throw new ArgumentException ("Height cannot be negative", nameof (original));
+		if (original.Height == 0) yield break;
+		for (int i = 0; i < original.Height; i++)
+			yield return new (
+				original.X,
+				original.Y + i,
+				original.Width,
+				1);
+	}
 
-			foreach (var en in values)
-				if (enumeration.Equals (en))
-					return true;
+	public static ColorBgra RandomColorBgra (this Random random, bool includeAlpha = false)
+	{
+		Span<byte> colorBytes = stackalloc byte[4];
+		random.NextBytes (colorBytes);
+		ColorBgra baseColor = ColorBgra.FromBgr (colorBytes[0], colorBytes[1], colorBytes[2]);
+		return
+			includeAlpha
+			? baseColor.NewAlpha (colorBytes[3])
+			: baseColor;
+	}
 
-			return false;
-		}
+	public static IReadOnlyList<IReadOnlyList<PointI>> CreatePolygonSet (
+		this BitMask stencil,
+		RectangleD bounds,
+		PointI translateOffset)
+	{
+		if (stencil.IsEmpty)
+			return [];
 
-		public unsafe static Point[][] CreatePolygonSet (this BitMask stencil, Rectangle bounds, int translateX, int translateY)
-		{
-			List<Point[]> polygons = new List<Point[]> ();
+		List<IReadOnlyList<PointI>> polygons = [];
+		List<PointI> pts = [];
 
-			if (!stencil.IsEmpty) {
-				Point start = bounds.Location ();
-				List<Point> pts = new List<Point> ();
-				int count = 0;
+		PointI start = bounds.Location ().ToInt ();
 
-				// find all islands
-				while (true) {
-					bool startFound = false;
+		int count = 0;
 
-					while (true) {
-						if (stencil[start]) {
-							startFound = true;
-							break;
-						}
+		// find all islands
+		while (true) {
 
-						++start.X;
+			bool startFound = false;
 
-						if (start.X >= bounds.GetRight ()) {
-							++start.Y;
-							start.X = (int) bounds.X;
+			while (true) {
 
-							if (start.Y >= bounds.GetBottom ()) {
-								break;
-							}
-						}
-					}
-
-					if (!startFound)
-						break;
-
-					pts.Clear ();
-
-					Point last = new Point (start.X, start.Y + 1);
-					Point curr = new Point (start.X, start.Y);
-					Point next = curr;
-					Point left = new Point ();
-					Point right = new Point ();
-
-					// trace island outline
-					while (true) {
-						left.X = ((curr.X - last.X) + (curr.Y - last.Y) + 2) / 2 + curr.X - 1;
-						left.Y = ((curr.Y - last.Y) - (curr.X - last.X) + 2) / 2 + curr.Y - 1;
-
-						right.X = ((curr.X - last.X) - (curr.Y - last.Y) + 2) / 2 + curr.X - 1;
-						right.Y = ((curr.Y - last.Y) + (curr.X - last.X) + 2) / 2 + curr.Y - 1;
-
-						if (bounds.ContainsPoint (left.X, left.Y) && stencil[left]) {
-							// go left
-							next.X += curr.Y - last.Y;
-							next.Y -= curr.X - last.X;
-						} else if (bounds.ContainsPoint (right.X, right.Y) && stencil[right]) {
-							// go straight
-							next.X += curr.X - last.X;
-							next.Y += curr.Y - last.Y;
-						} else {
-							// turn right
-							next.X -= curr.Y - last.Y;
-							next.Y += curr.X - last.X;
-						}
-
-						if (Math.Sign (next.X - curr.X) != Math.Sign (curr.X - last.X) ||
-						    Math.Sign (next.Y - curr.Y) != Math.Sign (curr.Y - last.Y)) {
-							pts.Add (curr);
-							++count;
-						}
-
-						last = curr;
-						curr = next;
-
-						if (next.X == start.X && next.Y == start.Y)
-							break;
-					}
-
-					Point[] points = pts.ToArray ();
-					Scanline[] scans = points.GetScans ();
-
-					foreach (Scanline scan in scans)
-						stencil.Invert (scan);
-
-					points.TranslatePointsInPlace (translateX, translateY);
-					polygons.Add (points);
+				if (stencil[start]) {
+					startFound = true;
+					break;
 				}
+
+				start = start with { X = start.X + 1 };
+
+				if (start.X < bounds.Right)
+					continue;
+
+				start = start with { X = (int) bounds.X, Y = start.Y + 1 };
+
+				if (start.Y >= bounds.Bottom)
+					break;
 			}
 
-			return polygons.ToArray ();
+			if (!startFound)
+				break;
+
+			pts.Clear ();
+
+			PointI last = new (start.X, start.Y + 1);
+			PointI curr = new (start.X, start.Y);
+			PointI next = curr;
+
+			// trace island outline
+			while (true) {
+
+				PointI currLastDelta = curr - last;
+
+				PointI left = new (
+					X: (currLastDelta.X + currLastDelta.Y + 2) / 2 + curr.X - 1,
+					Y: (currLastDelta.Y - currLastDelta.X + 2) / 2 + curr.Y - 1);
+
+				PointI right = new (
+					X: (currLastDelta.X - currLastDelta.Y + 2) / 2 + curr.X - 1,
+					Y: (currLastDelta.Y + currLastDelta.X + 2) / 2 + curr.Y - 1);
+
+				if (bounds.ContainsPoint ((PointD) left) && stencil[left]) {
+					// go left
+					next -= currLastDelta.Rotated90CCW ();
+				} else if (bounds.ContainsPoint ((PointD) right) && stencil[right]) {
+					// go straight
+					next += currLastDelta;
+				} else {
+					// turn right
+					next += currLastDelta.Rotated90CCW ();
+				}
+
+				if (
+					Math.Sign (next.X - curr.X) != Math.Sign (currLastDelta.X) ||
+					Math.Sign (next.Y - curr.Y) != Math.Sign (currLastDelta.Y)) {
+					pts.Add (curr);
+					++count;
+				}
+
+				last = curr;
+				curr = next;
+
+				if (next == start)
+					break;
+			}
+
+			PointI[] points = [.. pts];
+
+			var scans = CairoExtensions.GetScans (points);
+
+			foreach (var scan in scans)
+				stencil.Invert (scan);
+
+			CairoExtensions.TranslatePointsInPlace (points, translateOffset);
+
+			polygons.Add (points);
 		}
+
+		return polygons;
+	}
+
+	public static async Task LaunchUri (this SystemManager system, string uri)
+	{
+		// Workaround for macOS, which produces an "unsupported on current backend" error (https://gitlab.gnome.org/GNOME/gtk/-/issues/6788)
+		if (system.OperatingSystem == OS.Mac) {
+			Process process = Process.Start ("open", uri);
+			process.WaitForExit ();
+		} else {
+			Gtk.UriLauncher launcher = Gtk.UriLauncher.New (uri);
+			await launcher.LaunchAsync (PintaCore.Chrome.MainWindow);
+		}
+	}
+
+	internal static Task ShowUnsupportedFormatDialog (
+		this ChromeManager chrome,
+		Gtk.Window parent,
+		IEnumerable<PaletteDescriptor> supportedPalettes,
+		string filename,
+		string message,
+		string errors)
+	{
+		StringBuilder details = new ();
+
+		details.AppendLine (Translations.GetString ("Could not open file: {0}", filename));
+		details.AppendLine (Translations.GetString ("Pinta supports the following palette formats:"));
+
+		var extensions =
+			from format in supportedPalettes
+			where format.Loader != null
+			from extension in format.Extensions
+			where char.IsLower (extension.FirstOrDefault ())
+			orderby extension
+			select extension;
+
+		details.AppendJoin (", ", extensions);
+
+		return chrome.ShowErrorDialog (
+			parent,
+			message,
+			details.ToString (),
+			errors);
 	}
 }

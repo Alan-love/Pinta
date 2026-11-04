@@ -1,15 +1,12 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using Pinta.Core;
 
-namespace Pinta.Core
+[assembly: Mono.Addins.AddinRoot ("Pinta", PintaCore.ApplicationVersion, CompatVersion = PintaCore.AddinCompatVersion)]
+
+namespace Pinta.Core;
+
+[Mono.Addins.TypeExtensionPoint]
+public interface IExtension
 {
-	// TODO-GTK3 (addins)
-	// [TypeExtensionPoint]
-	public interface IExtension
-	{
-		void Initialize ();
-		void Uninitialize ();
-	}
+	void Initialize ();
+	void Uninitialize ();
 }

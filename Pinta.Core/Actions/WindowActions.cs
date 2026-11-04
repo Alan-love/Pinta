@@ -1,21 +1,21 @@
-// 
+//
 // WindowActions.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,98 +24,113 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using Gtk;
+namespace Pinta.Core;
 
-namespace Pinta.Core
+public sealed class WindowActions
 {
-	public class WindowActions
+	private Gio.Menu doc_section = null!; // NRT - Set in RegisterActions
+	private static readonly string doc_action_id = "active_document";
+	private readonly Gio.SimpleAction active_doc_action;
+	private uint deferred_update_event;
+
+	public Command SaveAll { get; }
+	public Command CloseAll { get; }
+
+	private readonly WorkspaceManager workspace;
+	public WindowActions (WorkspaceManager workspace)
 	{
-		private GLib.Menu doc_section = null!; // NRT - Set in RegisterActions
-		private static readonly string doc_action_id = "active_document";
-		private GLib.SimpleAction active_doc_action;
+		SaveAll = new Command (
+			"SaveAll",
+			Translations.GetString ("Save All"),
+			null,
+			Resources.StandardIcons.DocumentSave,
+			shortcuts: ["<Ctrl><Alt>A"]);
 
-		public Command SaveAll { get; private set; }
-		public Command CloseAll { get; private set; }
+		CloseAll = new Command (
+			"CloseAll",
+			Translations.GetString ("Close All"),
+			null,
+			Resources.StandardIcons.WindowClose,
+			shortcuts: ["<Primary><Shift>W"]);
 
-		public WindowActions ()
-		{
-			SaveAll = new Command ("SaveAll", Translations.GetString ("Save All"), null, Resources.StandardIcons.DocumentSave);
-			CloseAll = new Command ("CloseAll", Translations.GetString ("Close All"), null, Resources.StandardIcons.WindowClose);
+		// TODO: Make `Command`
+		active_doc_action = Gio.SimpleAction.NewStateful (
+			doc_action_id,
+			GtkExtensions.IntVariantType,
+			GLib.Variant.NewInt32 (-1));
 
-			active_doc_action = new GLib.SimpleAction (doc_action_id, GLib.VariantType.Int32, new GLib.Variant (-1));
+		active_doc_action.OnActivate += (o, e) => {
+			int idx = e.Parameter!.GetInt32 ();
+			workspace.SetActiveDocument (idx);
+			active_doc_action.ChangeState (e.Parameter);
+		};
 
-			active_doc_action.Activated += (o, e) => {
-				var idx = (int) e.P0;
-				if (idx < PintaCore.Workspace.OpenDocuments.Count) {
-					PintaCore.Workspace.SetActiveDocumentInternal (PintaCore.Workspace.OpenDocuments[idx]);
-					active_doc_action.ChangeState (e.P0);
-				}
-			};
-		}
+		workspace.DocumentActivated += (o, e) => {
+			e.Document.Renamed += (_, _) => RebuildDocumentMenu ();
+			e.Document.IsDirtyChanged += (_, _) => RebuildDocumentMenu ();
+			AddDocumentMenuItem (workspace.OpenDocuments.IndexOf (e.Document));
+		};
 
-		#region Initialization
-		public void RegisterActions (Gtk.Application app, GLib.Menu menu)
-		{
-			app.AddAccelAction (SaveAll, "<Ctrl><Alt>A");
-			menu.AppendItem (SaveAll.CreateMenuItem ());
+		workspace.ActiveDocumentChanged += OnActiveDocumentChanged;
+		workspace.DocumentClosed += (_, _) => RebuildDocumentMenu ();
 
-			app.AddAccelAction (CloseAll, "<Primary><Shift>W");
-			menu.AppendItem (CloseAll.CreateMenuItem ());
+		this.workspace = workspace;
+	}
 
-			doc_section = new GLib.Menu ();
-			menu.AppendSection (null, doc_section);
+	public void RegisterActions (
+		Gtk.Application app,
+		Gio.Menu menu)
+	{
+		menu.AppendItem (SaveAll.CreateMenuItem ());
+		menu.AppendItem (CloseAll.CreateMenuItem ());
 
-			app.AddAction (active_doc_action);
-		}
-		#endregion
+		doc_section = Gio.Menu.New ();
+		menu.AppendSection (null, doc_section);
 
-		#region Public Methods
+		app.AddCommands ([
+			SaveAll,
+			CloseAll]);
 
-		public void SetActiveDocument (Document doc)
-		{
-			var idx = PintaCore.Workspace.OpenDocuments.IndexOf (doc);
-			active_doc_action.Activate (new GLib.Variant (idx));
-		}
+		app.AddAction (active_doc_action);
 
-		public void AddDocument (Document doc)
-		{
-			doc.Renamed += (o, e) => { RebuildDocumentMenu (); };
-			doc.IsDirtyChanged += (o, e) => { RebuildDocumentMenu (); };
+		// Assign accelerators up to Alt-9 for the active documents.
+		for (int i = 0; i < 9; ++i)
+			app.SetAccelsForAction (BuildActionId (i), [$"<Alt>{i + 1}"]);
+	}
 
-			AddDocumentMenuItem (PintaCore.Workspace.OpenDocuments.IndexOf (doc));
-		}
+	private void AddDocumentMenuItem (int idx)
+	{
+		Document doc = workspace.OpenDocuments[idx];
+		string actionId = BuildActionId (idx);
+		string label = $"{doc.DisplayName}{(doc.IsDirty ? "*" : string.Empty)}";
 
-		public void RemoveDocument (Document doc)
-		{
-			RebuildDocumentMenu ();
-		}
-		#endregion
+		Gio.MenuItem menuItem = Gio.MenuItem.New (label, actionId);
+		doc_section.AppendItem (menuItem);
+	}
 
-		#region Private Methods
-		private void AddDocumentMenuItem (int idx)
-		{
-			var doc = PintaCore.Workspace.OpenDocuments[idx];
-			var action_id = string.Format ("app.{0}({1})", doc_action_id, idx);
-			var label = string.Format ("{0}{1}", doc.Filename, doc.IsDirty ? "*" : string.Empty);
-			var menu_item = new GLib.MenuItem (label, action_id);
-			doc_section.AppendItem (menu_item);
+	private static string BuildActionId (int idx) => $"app.{doc_action_id}({idx})";
 
-			// We only assign accelerators up to Alt-9
-			if (idx < 9)
-				PintaCore.Chrome.Application.SetAccelsForAction (action_id, new[] { string.Format ("<Alt>{0}", idx + 1) });
-		}
+	private void RebuildDocumentMenu ()
+	{
+		doc_section.RemoveAll ();
 
-		private void RebuildDocumentMenu ()
-		{
-			doc_section.RemoveAll ();
-			for (int i = 0; i < PintaCore.Workspace.OpenDocuments.Count; ++i)
-				AddDocumentMenuItem (i);
+		for (int i = 0; i < workspace.OpenDocuments.Count; ++i)
+			AddDocumentMenuItem (i);
 
-			PintaCore.Workspace.ResetTitle ();
-		}
-		#endregion
+		workspace.ResetTitle ();
+	}
+
+	private void OnActiveDocumentChanged (object? o, System.EventArgs eventArgs)
+	{
+		// Updating the action's state can be surprisingly expensive when e.g. opening
+		// many documents (bug #1574), so an update is deferred until we return to the event loop.
+		if (deferred_update_event > 0)
+			return;
+
+		deferred_update_event = GLib.Functions.IdleAdd (GLib.Constants.PRIORITY_DEFAULT, () => {
+			active_doc_action.ChangeState (GLib.Variant.NewInt32 (workspace.ActiveDocumentIndex));
+			deferred_update_event = 0;
+			return false;
+		});
 	}
 }

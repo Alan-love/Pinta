@@ -25,72 +25,109 @@
 // THE SOFTWARE.
 
 using System;
-using Gtk;
 using Pinta.Core;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class OpenDocumentAction : IActionHandler
 {
-	class OpenDocumentAction : IActionHandler
+	private readonly FileActions file;
+	private readonly ChromeManager chrome;
+	private readonly WorkspaceManager workspace;
+	private readonly RecentFileManager recent_files;
+	private readonly ImageConverterManager image_formats;
+	internal OpenDocumentAction (
+		FileActions file,
+		ChromeManager chrome,
+		WorkspaceManager workspace,
+		RecentFileManager recentFiles,
+		ImageConverterManager imageFormats)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.File.Open.Activated += Activated;
+		this.file = file;
+		this.chrome = chrome;
+		this.workspace = workspace;
+		recent_files = recentFiles;
+		image_formats = imageFormats;
+	}
+
+	void IActionHandler.Initialize ()
+	{
+		file.Open.Activated += Activated;
+	}
+
+	void IActionHandler.Uninitialize ()
+	{
+		file.Open.Activated -= Activated;
+	}
+
+	private async void Activated (object sender, EventArgs e)
+	{
+		using Gtk.FileFilter imagesFilter = CreateImagesFilter ();
+		using Gtk.FileFilter catchAllFilter = CreateCatchAllFilter ();
+
+		using Gio.ListStore filters = Gio.ListStore.New (Gtk.FileFilter.GetGType ());
+		filters.Append (imagesFilter);
+		filters.Append (catchAllFilter);
+
+		using Gtk.FileDialog fileDialog = Gtk.FileDialog.New ();
+		fileDialog.SetTitle (Translations.GetString ("Open Image File"));
+		fileDialog.SetFilters (filters);
+		fileDialog.Modal = true;
+
+		if (recent_files.GetDialogDirectory () is Gio.File dir && dir.QueryExists (null))
+			fileDialog.SetInitialFolder (dir);
+
+		var selection = await fileDialog.OpenFilesAsync (chrome.MainWindow);
+
+		if (selection is null)
+			return;
+
+		foreach (var file in selection) {
+
+			if (!workspace.OpenFile (file))
+				continue;
+
+			recent_files.AddFile (file);
+
+			Gio.File? directory = file.GetParent ();
+
+			if (directory is not null)
+				recent_files.LastDialogDirectory = directory;
 		}
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.File.Open.Activated -= Activated;
-		}
-		#endregion
+	private static Gtk.FileFilter CreateCatchAllFilter ()
+	{
+		Gtk.FileFilter result = Gtk.FileFilter.New ();
+		result.Name = Translations.GetString ("All files");
+		result.AddPattern ("*");
+		return result;
+	}
 
-		private void Activated (object sender, EventArgs e)
-		{
-			using var fcd = new FileChooserNative (
-				Translations.GetString ("Open Image File"),
-				PintaCore.Chrome.MainWindow,
-				FileChooserAction.Open,
-				Translations.GetString ("Open"),
-				Translations.GetString ("Cancel"));
+	private Gtk.FileFilter CreateImagesFilter ()
+	{
+		Gtk.FileFilter result = Gtk.FileFilter.New ();
 
-			// Add image files filter
-			var ff = new FileFilter {
-				Name = Translations.GetString ("Image files")
-			};
+		result.Name = Translations.GetString ("Image files");
 
-			foreach (var format in PintaCore.System.ImageFormats.Formats) {
-				if (!format.IsWriteOnly ()) {
-					foreach (var ext in format.Extensions)
-						ff.AddPattern (string.Format ("*.{0}", ext));
-				}
+		foreach (var format in image_formats.Formats) {
+
+			if (!format.IsImportAvailable ())
+				continue;
+
+			foreach (var ext in format.Extensions)
+				result.AddPattern ($"*.{ext}");
+
+			// On Unix-like systems, file extensions are often considered optional.
+			// Files can often also be identified by their MIME types.
+			// Windows does not understand MIME types natively.
+			// Adding a MIME filter on Windows would break the native file picker and force a GTK file picker instead.
+			if (SystemManager.GetOperatingSystem () != OS.Windows) {
+				foreach (var mime in format.Mimes)
+					result.AddMimeType (mime);
 			}
-
-			fcd.AddFilter (ff);
-
-			var ff2 = new FileFilter {
-				Name = Translations.GetString ("All files")
-			};
-			ff2.AddPattern ("*.*");
-			fcd.AddFilter (ff2);
-
-			fcd.SetCurrentFolder (PintaCore.System.GetDialogDirectory ());
-			fcd.SelectMultiple = true;
-
-			var response = (ResponseType) fcd.Run ();
-
-			if (response == ResponseType.Accept) {
-				PintaCore.System.LastDialogDirectory = fcd.CurrentFolder;
-
-				foreach (var file in fcd.Filenames) {
-					if (PintaCore.Workspace.OpenFile (file)) {
-						RecentManager.Default.AddFull (fcd.Uri, PintaCore.System.RecentData);
-
-						var directory = System.IO.Path.GetDirectoryName (file);
-						if (directory is not null)
-							PintaCore.System.LastDialogDirectory = directory;
-					}
-				}
-			}
 		}
+
+		return result;
 	}
 }

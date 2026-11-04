@@ -1,21 +1,21 @@
-// 
+//
 // AppActions.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -25,47 +25,59 @@
 // THE SOFTWARE.
 
 using System;
-using System.Collections.Generic;
-using System.IO;
-using Gdk;
-using Gtk;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class AppActions
 {
-	public class AppActions
+	public Command About { get; }
+	public Command Preferences { get; }
+	public Command KeyboardShortcuts { get; }
+	public Command Exit { get; }
+
+	public event EventHandler? BeforeQuit;
+
+	public AppActions ()
 	{
-		public Command About { get; private set; }
-		public Command Exit { get; private set; }
+		About = new Command (
+			"about",
+			Translations.GetString ("About"),
+			null,
+			Resources.StandardIcons.HelpAbout);
+		Preferences = new Command (
+			"preferences",
+			Translations.GetString ("Preferences..."),
+			null,
+			Resources.StandardIcons.Preferences,
+			shortcuts: ["<Primary>comma"]);
+		KeyboardShortcuts = new Command (
+			"keyboardshortcuts",
+			Translations.GetString ("Keyboard Shortcuts"),
+			null, null,
+			shortcuts: ["<Primary>question"]);
+		Exit = new Command (
+			"quit",
+			Translations.GetString ("Quit"),
+			null,
+			Resources.StandardIcons.ApplicationExit,
+			shortcuts: ["<Primary>Q"]);
+	}
 
-		public event EventHandler? BeforeQuit;
+	public void RegisterActions (Gtk.Application app)
+	{
+		app.AddCommands ([
+			About,
+			Preferences,
+			KeyboardShortcuts,
+			Exit]);
+	}
 
-		public AppActions ()
-		{
-			About = new Command ("about", Translations.GetString ("About"), null, Resources.StandardIcons.HelpAbout);
-			Exit = new Command ("quit", Translations.GetString ("Quit"), null, Resources.StandardIcons.ApplicationExit);
-		}
+	public void RegisterHandlers ()
+	{
+	}
 
-		#region Initialization
-		public void RegisterActions (Gtk.Application app, GLib.Menu menu)
-		{
-			app.AddAction (About);
-			menu.AppendItem (About.CreateMenuItem ());
-
-			app.AddAccelAction (Exit, "<Primary>Q");
-			menu.AppendItem (Exit.CreateMenuItem ());
-		}
-
-		public void RegisterHandlers ()
-		{
-		}
-		#endregion
-
-		#region Event Invokers
-		public void RaiseBeforeQuit ()
-		{
-			if (BeforeQuit != null)
-				BeforeQuit (this, EventArgs.Empty);
-		}
-		#endregion
+	public void RaiseBeforeQuit ()
+	{
+		BeforeQuit?.Invoke (this, EventArgs.Empty);
 	}
 }

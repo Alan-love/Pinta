@@ -8,105 +8,124 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class BulgeEffect : BaseEffect
 {
-	public class BulgeEffect : BaseEffect
+	public sealed override bool IsTileable => true;
+
+	public override string Icon => Resources.Icons.EffectsDistortBulge;
+
+	public override string Name => Translations.GetString ("Bulge");
+
+	public override bool IsConfigurable => true;
+
+	public override string EffectMenuCategory => Translations.GetString ("Distort");
+
+	public BulgeData Data => (BulgeData) EffectData!;
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public BulgeEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Distort.Bulge.png"; }
-		}
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new BulgeData ();
+	}
 
-		public override string Name {
-			get { return Translations.GetString ("Bulge"); }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	private sealed record BulgeSettings (
+		float halfWidth,
+		float halfHeight,
+		float maxRadius,
+		float amount,
+		int sourceWidth,
+		int sourceHeight);
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Distort"); }
-		}
+	private BulgeSettings CreateSettings (ImageSurface source)
+	{
+		float bulge = Data.Amount;
 
-		public BulgeData Data {
-			get { return (BulgeData) EffectData!; } // NRT - Set in constructor
-		}
+		float hw = source.Width / 2f;
+		float hh = source.Height / 2f;
 
-		public BulgeEffect ()
-		{
-			EffectData = new BulgeData ();
-		}
+		return new (
+			halfWidth: hw + ((float) Data.Offset.Horizontal * hw),
+			halfHeight: hh + ((float) Data.Offset.Vertical * hh),
+			maxRadius: Math.Min (hw, hh) * Data.RadiusPercentage / 100f,
+			amount: bulge / 100f,
+			sourceWidth: source.Width,
+			sourceHeight: source.Height);
+	}
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
+	// Algorithm Code Ported From PDN
+	protected override void Render (
+		ImageSurface source,
+		ImageSurface destination,
+		RectangleI roi)
+	{
+		BulgeSettings settings = CreateSettings (source);
 
-		#region Algorithm Code Ported From PDN
-		unsafe public override void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			float bulge = (float) Data.Amount;
+		ReadOnlySpan<ColorBgra> sourceData = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
 
-			float hw = dst.Width / 2f;
-			float hh = dst.Height / 2f;
-			float maxrad = Math.Min (hw, hh);
-			float amt = bulge / 100f;
+		foreach (var pixel in Tiling.GeneratePixelOffsets (roi, new Size (settings.sourceWidth, settings.sourceHeight)))
+			destinationData[pixel.memoryOffset] = GetFinalPixelColor (
+				settings,
+				source,
+				sourceData,
+				pixel);
+	}
 
-			hh = hh + (float) Data.Offset.Y * hh;
-			hw = hw + (float) Data.Offset.X * hw;
+	private static ColorBgra GetFinalPixelColor (
+		BulgeSettings settings,
+		ImageSurface source,
+		ReadOnlySpan<ColorBgra> sourceData,
+		PixelOffset pixel)
+	{
+		PointF translated = new (
+			X: pixel.coordinates.X - settings.halfWidth,
+			Y: pixel.coordinates.Y - settings.halfHeight);
 
-			int src_width = src.Width;
-			int src_height = src.Height;
-			ColorBgra* src_data_ptr = (ColorBgra*) src.DataPtr;
+		float r = Utility.MagnitudeF (translated);
+		float rscale1 = (1f - (r / settings.maxRadius));
 
-			foreach (Gdk.Rectangle rect in rois) {
+		if (rscale1 <= 0)
+			return sourceData[pixel.memoryOffset];
 
-				for (int y = rect.Top; y <= rect.GetBottom (); y++) {
+		float rscale2 = 1 - settings.amount * rscale1 * rscale1;
 
-					ColorBgra* dstPtr = dst.GetPointAddressUnchecked (rect.Left, y);
-					ColorBgra* srcPtr = src.GetPointAddressUnchecked (src_data_ptr, src_width, rect.Left, y);
-					float v = y - hh;
+		PointF p = translated.Scaled (rscale2);
 
-					for (int x = rect.Left; x <= rect.GetRight (); x++) {
-						float u = x - hw;
-						float r = (float) Math.Sqrt (u * u + v * v);
-						float rscale1 = (1f - (r / maxrad));
+		return source.GetBilinearSampleClamped (
+			sourceData,
+			settings.sourceWidth,
+			settings.sourceHeight,
+			p.X + settings.halfWidth,
+			p.Y + settings.halfHeight);
+	}
 
-						if (rscale1 > 0) {
-							float rscale2 = 1 - amt * rscale1 * rscale1;
+	public sealed class BulgeData : EffectData
+	{
+		[Caption ("Amount")]
+		[MinimumValue (-200), MaximumValue (100)]
+		public int Amount { get; set; } = 45;
 
-							float xp = u * rscale2;
-							float yp = v * rscale2;
+		[Caption ("Offset")]
+		public CenterOffset<double> Offset { get; set; } = new (0.0, 0.0);
 
-							*dstPtr = src.GetBilinearSampleClamped (src_data_ptr, src_width, src_height, xp + hw, yp + hh);
-						} else {
-							*dstPtr = *srcPtr;
-						}
+		// Translators: This refers to how big the radius is as a percentage of the image's dimensions
+		[Caption ("Radius Percentage")]
+		[MinimumValue (10), MaximumValue (100)]
+		public int RadiusPercentage { get; set; } = 100;
 
-						++dstPtr;
-						++srcPtr;
-					}
-				}
-			}
-		}
-		#endregion
-
-		public class BulgeData : EffectData
-		{
-			[Caption ("Amount"), MinimumValue (-200), MaximumValue (100)]
-			public int Amount = 45;
-
-			[Caption ("Offset")]
-			public Cairo.PointD Offset = new Cairo.PointD (0.0, 0.0);
-
-			[Skip]
-			public override bool IsDefault {
-				get { return Amount == 0; }
-			}
-		}
+		[Skip]
+		public override bool IsDefault => Amount == 0;
 	}
 }

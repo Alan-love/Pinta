@@ -1,21 +1,21 @@
-// 
+//
 // RectangleEditEngine.cs
-//  
+//
 // Author:
 //       Andrew Davis <andrew.3.1415@gmail.com>
-// 
+//
 // Copyright (c) 2014 Andrew Davis, GSoC 2014
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -26,46 +26,46 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Cairo;
 using Pinta.Core;
 
-namespace Pinta.Tools
+namespace Pinta.Tools;
+
+public sealed class RectangleEditEngine : BaseEditEngine
 {
-	public class RectangleEditEngine : BaseEditEngine
+	protected override string ShapeName
+		=> Translations.GetString ("Closed Curve Shape");
+
+	private readonly IWorkspaceService workspace;
+	public RectangleEditEngine (
+		IServiceProvider services,
+		ShapeTool passedOwner
+	) : base (services, passedOwner)
 	{
-		protected override string ShapeName {
-			get {
-				return Translations.GetString ("Closed Curve Shape");
-			}
-		}
+		workspace = services.GetService<IWorkspaceService> ();
+	}
 
-		public RectangleEditEngine (ShapeTool passedOwner) : base (passedOwner)
-		{
+	protected override ShapeEngine CreateShape (
+		bool ctrlKey,
+		bool clickedOnControlPoint,
+		PointD prevSelPoint)
+	{
+		Document doc = workspace.ActiveDocument;
 
-		}
+		LineCurveSeriesEngine newEngine = new (doc.Layers.CurrentUserLayer, null, BaseEditEngine.ShapeTypes.ClosedLineCurveSeries,
+			owner.UseAntialiasing, true, BaseEditEngine.OutlineColor, BaseEditEngine.FillColor, owner.EditEngine.BrushWidth, LineCap.Square);
 
-		protected override ShapeEngine CreateShape (bool ctrlKey, bool clickedOnControlPoint, PointD prevSelPoint)
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
+		AddRectanglePoints (ctrlKey, clickedOnControlPoint, newEngine, prevSelPoint);
 
-			ShapeEngine newEngine = new LineCurveSeriesEngine (doc.Layers.CurrentUserLayer, null, BaseEditEngine.ShapeTypes.ClosedLineCurveSeries,
-				owner.UseAntialiasing, true, BaseEditEngine.OutlineColor, BaseEditEngine.FillColor, owner.EditEngine.BrushWidth);
+		//Set the new shape's DashPattern option.
+		newEngine.DashPattern = dash_pattern_box.ComboBox!.ComboBox.GetActiveText ()!; // NRT - Code assumes this is not-null
 
-			AddRectanglePoints (ctrlKey, clickedOnControlPoint, newEngine, prevSelPoint);
+		return newEngine;
+	}
 
-			//Set the new shape's DashPattern option.
-			newEngine.DashPattern = dash_pattern_box.comboBox!.ComboBox.ActiveText; // NRT - Code assumes this is not-null
-
-			return newEngine;
-		}
-
-		protected override void MovePoint (List<ControlPoint> controlPoints)
-		{
-			MoveRectangularPoint (controlPoints);
-
-			base.MovePoint (controlPoints);
-		}
+	protected override void MovePoint (List<ControlPoint> controlPoints)
+	{
+		MoveRectangularPoint (controlPoints);
+		base.MovePoint (controlPoints);
 	}
 }

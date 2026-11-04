@@ -1,21 +1,21 @@
-// 
+//
 // AddinManagerAction.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -26,35 +26,39 @@
 
 using System;
 using Pinta.Core;
+using Pinta.Gui.Addins;
 
-namespace Pinta.Actions
+namespace Pinta.Actions;
+
+internal sealed class AddinManagerAction : IActionHandler
 {
-	class AddinManagerAction : IActionHandler
+	private readonly AddinActions addins;
+	private readonly ChromeManager chrome;
+	private readonly SystemManager system;
+	internal AddinManagerAction (
+		AddinActions addins,
+		ChromeManager chrome,
+		SystemManager system)
 	{
-		#region IActionHandler Members
-		public void Initialize ()
-		{
-			PintaCore.Actions.Addins.AddinManager.Activated += Activated;
-		}
+		this.addins = addins;
+		this.chrome = chrome;
+		this.system = system;
+	}
 
-		public void Uninitialize ()
-		{
-			PintaCore.Actions.Addins.AddinManager.Activated -= Activated;
-		}
-		#endregion
+	void IActionHandler.Initialize ()
+	{
+		addins.AddinManager.Activated += Activated;
+	}
 
-		private void Activated (object sender, EventArgs e)
-		{
-			// TODO-GTK3 (addins)
-#if false
-			AddinManagerWindow.AllowInstall = true;
+	void IActionHandler.Uninitialize ()
+	{
+		addins.AddinManager.Activated -= Activated;
+	}
 
-			AddinManagerWindow.Run (PintaCore.Chrome.MainWindow);
-#else
-			throw new NotImplementedException ();
-#endif
-
-			//dlg.DeleteEvent += delegate { dlg.Destroy (); };
-		}
+	private async void Activated (object sender, EventArgs e)
+	{
+		AddinSetupService service = new (Mono.Addins.AddinManager.Registry);
+		using AddinManagerDialog dialog = AddinManagerDialog.New (chrome.MainWindow, service, system, chrome);
+		await dialog.PresentAsync ();
 	}
 }

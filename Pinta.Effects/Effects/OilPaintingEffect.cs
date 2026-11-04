@@ -8,175 +8,148 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class OilPaintingEffect : BaseEffect
 {
-	public class OilPaintingEffect : BaseEffect
+	public override string Icon
+		=> Resources.Icons.EffectsArtisticOilPainting;
+
+	public sealed override bool IsTileable
+		=> true;
+
+	public override string Name
+		=> Translations.GetString ("Oil Painting");
+
+	public override bool IsConfigurable
+		=> true;
+
+	public override string EffectMenuCategory
+		=> Translations.GetString ("Artistic");
+
+	public OilPaintingData Data
+		=> (OilPaintingData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public OilPaintingEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Artistic.OilPainting.png"; }
-		}
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new OilPaintingData ();
+	}
 
-		public override string Name {
-			get { return Translations.GetString ("Oil Painting"); }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	// Algorithm Code Ported From PDN
+	protected override void Render (
+		ImageSurface source,
+		ImageSurface destination,
+		RectangleI roi)
+	{
+		OilPaintingSettings settings = CreateSettings (source);
+		ReadOnlySpan<ColorBgra> src_data = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> dst_data = destination.GetPixelData ();
+		foreach (var pixel in Tiling.GeneratePixelOffsets (roi, settings.canvasSize))
+			dst_data[pixel.memoryOffset] = GetFinalColor (
+				settings,
+				src_data,
+				pixel);
+	}
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Artistic"); }
-		}
+	private sealed record OilPaintingSettings (
+		Size canvasSize,
+		int brushSize,
+		int arrayLens,
+		byte maxIntensity);
+	private OilPaintingSettings CreateSettings (ImageSurface source)
+	{
+		int coarseness = Data.Coarseness;
+		return new (
+			canvasSize: source.GetSize (),
+			brushSize: Data.BrushSize,
+			arrayLens: 1 + coarseness,
+			maxIntensity: (byte) coarseness);
+	}
 
-		public OilPaintingData Data { get { return (OilPaintingData) EffectData!; } } // NRT - Set in constructor
 
-		public OilPaintingEffect ()
-		{
-			EffectData = new OilPaintingData ();
-		}
+	private static ColorBgra GetFinalColor (
+		OilPaintingSettings settings,
+		ReadOnlySpan<ColorBgra> sourceData,
+		PixelOffset pixel)
+	{
+		Span<int> intensityCount = stackalloc int[settings.arrayLens];
+		Span<uint> avgRed = stackalloc uint[settings.arrayLens];
+		Span<uint> avgGreen = stackalloc uint[settings.arrayLens];
+		Span<uint> avgBlue = stackalloc uint[settings.arrayLens];
+		Span<uint> avgAlpha = stackalloc uint[settings.arrayLens];
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
+		int left = Math.Max (pixel.coordinates.X - settings.brushSize, 0);
+		int right = Math.Min (pixel.coordinates.X + settings.brushSize + 1, settings.canvasSize.Width);
+		int top = Math.Max (pixel.coordinates.Y - settings.brushSize, 0);
+		int bottom = Math.Min (pixel.coordinates.Y + settings.brushSize + 1, settings.canvasSize.Height);
 
-		#region Algorithm Code Ported From PDN
-		public unsafe override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			int width = src.Width;
-			int height = src.Height;
+		int numInt = 0;
 
-			int arrayLens = 1 + Data.Coarseness;
+		for (int j = top; j < bottom; ++j) {
+			var src_row = sourceData.Slice (j * settings.canvasSize.Width, settings.canvasSize.Width);
+			for (int i = left; i < right; ++i) {
 
-			int localStoreSize = arrayLens * 5 * sizeof (int);
+				ColorBgra sourcePixel = src_row[i];
 
-			byte* localStore = stackalloc byte[localStoreSize];
-			byte* p = localStore;
+				byte intensity = Utility.FastScaleByteByByte (sourcePixel.GetIntensityByte (), settings.maxIntensity);
 
-			int* intensityCount = (int*) p;
-			p += arrayLens * sizeof (int);
+				++intensityCount[intensity];
+				++numInt;
 
-			uint* avgRed = (uint*) p;
-			p += arrayLens * sizeof (uint);
-
-			uint* avgGreen = (uint*) p;
-			p += arrayLens * sizeof (uint);
-
-			uint* avgBlue = (uint*) p;
-			p += arrayLens * sizeof (uint);
-
-			uint* avgAlpha = (uint*) p;
-			p += arrayLens * sizeof (uint);
-
-			byte maxIntensity = (byte) Data.Coarseness;
-
-			foreach (Gdk.Rectangle rect in rois) {
-
-				int rectTop = rect.Top;
-				int rectBottom = rect.GetBottom ();
-				int rectLeft = rect.Left;
-				int rectRight = rect.GetRight ();
-
-				ColorBgra* dst_dataptr = (ColorBgra*) dest.DataPtr;
-				int dst_width = dest.Width;
-				ColorBgra* src_dataptr = (ColorBgra*) src.DataPtr;
-				int src_width = src.Width;
-
-				for (int y = rectTop; y <= rectBottom; ++y) {
-					ColorBgra* dstPtr = dest.GetPointAddressUnchecked (dst_dataptr, dst_width, rect.Left, y);
-
-					int top = y - Data.BrushSize;
-					int bottom = y + Data.BrushSize + 1;
-
-					if (top < 0) {
-						top = 0;
-					}
-
-					if (bottom > height) {
-						bottom = height;
-					}
-
-					for (int x = rectLeft; x <= rectRight; ++x) {
-						SetToZero (localStore, (ulong) localStoreSize);
-
-						int left = x - Data.BrushSize;
-						int right = x + Data.BrushSize + 1;
-
-						if (left < 0) {
-							left = 0;
-						}
-
-						if (right > width) {
-							right = width;
-						}
-
-						int numInt = 0;
-
-						for (int j = top; j < bottom; ++j) {
-							ColorBgra* srcPtr = src.GetPointAddressUnchecked (src_dataptr, src_width, left, j);
-
-							for (int i = left; i < right; ++i) {
-								byte intensity = Utility.FastScaleByteByByte (srcPtr->GetIntensityByte (), maxIntensity);
-
-								++intensityCount[intensity];
-								++numInt;
-
-								avgRed[intensity] += srcPtr->R;
-								avgGreen[intensity] += srcPtr->G;
-								avgBlue[intensity] += srcPtr->B;
-								avgAlpha[intensity] += srcPtr->A;
-
-								++srcPtr;
-							}
-						}
-
-						byte chosenIntensity = 0;
-						int maxInstance = 0;
-
-						for (int i = 0; i <= maxIntensity; ++i) {
-							if (intensityCount[i] > maxInstance) {
-								chosenIntensity = (byte) i;
-								maxInstance = intensityCount[i];
-							}
-						}
-
-						// TODO: correct handling of alpha values?
-
-						byte R = (byte) (avgRed[chosenIntensity] / maxInstance);
-						byte G = (byte) (avgGreen[chosenIntensity] / maxInstance);
-						byte B = (byte) (avgBlue[chosenIntensity] / maxInstance);
-						byte A = (byte) (avgAlpha[chosenIntensity] / maxInstance);
-
-						*dstPtr = ColorBgra.FromBgra (B, G, R, A);
-						++dstPtr;
-					}
-				}
+				avgRed[intensity] += sourcePixel.R;
+				avgGreen[intensity] += sourcePixel.G;
+				avgBlue[intensity] += sourcePixel.B;
+				avgAlpha[intensity] += sourcePixel.A;
 			}
 		}
 
-		// This is slow, and gets called a lot
-		private unsafe static void SetToZero (byte* dst, ulong length)
-		{
-			int* ptr = (int*) dst;
+		IntensityData intensityData = GetIntensityData (settings, intensityCount);
 
-			for (ulong i = 0; i < length / 4; i++) {
-				*ptr = 0;
-				ptr++;
-			}
+		// TODO: correct handling of alpha values?
+		return ColorBgra.FromBgra (
+			b: (byte) (avgBlue[intensityData.chosenIntensity] / intensityData.maxInstance),
+			g: (byte) (avgGreen[intensityData.chosenIntensity] / intensityData.maxInstance),
+			r: (byte) (avgRed[intensityData.chosenIntensity] / intensityData.maxInstance),
+			a: (byte) (avgAlpha[intensityData.chosenIntensity] / intensityData.maxInstance));
+	}
+
+	private readonly record struct IntensityData (byte chosenIntensity, int maxInstance);
+	private static IntensityData GetIntensityData (
+		OilPaintingSettings settings,
+		ReadOnlySpan<int> intensityCount)
+	{
+		byte chosenIntensity = 0;
+		int maxInstance = 0;
+		for (int i = 0; i <= settings.maxIntensity; ++i) {
+
+			if (intensityCount[i] <= maxInstance)
+				continue;
+
+			chosenIntensity = (byte) i;
+			maxInstance = intensityCount[i];
 		}
-		#endregion
+		return new (chosenIntensity, maxInstance);
+	}
 
-		public class OilPaintingData : EffectData
-		{
-			[Caption ("Brush Size"), MinimumValue (1), MaximumValue (8)]
-			public int BrushSize = 3;
+	public sealed class OilPaintingData : EffectData
+	{
+		[Caption ("Brush Size")]
+		[MinimumValue (1), MaximumValue (8)]
+		public int BrushSize { get; set; } = 3;
 
-			[Caption ("Coarseness"), MinimumValue (3), MaximumValue (255)]
-			public int Coarseness = 50;
-		}
+		[Caption ("Coarseness")]
+		[MinimumValue (3), MaximumValue (255)]
+		public int Coarseness { get; set; } = 50;
 	}
 }

@@ -1,21 +1,21 @@
-// 
+//
 // SimpleEffectDialog.cs
-//  
+//
 // Author:
 //       Jonathan Pobst <monkey@jpobst.com>
-// 
+//
 // Copyright (c) 2010 Jonathan Pobst
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -28,467 +28,659 @@
 // http://github.com/migueldeicaza/MonoTouch.Dialog
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.ComponentModel;
+using System.Linq;
 using System.Reflection;
-using System.Text;
+using System.Threading.Tasks;
+using Cairo;
+using Mono.Addins.Localization;
+using Pinta.Core;
 
-namespace Pinta.Gui.Widgets
+namespace Pinta.Gui.Widgets;
+
+[GObject.Subclass<Gtk.Dialog>]
+public sealed partial class SimpleEffectDialog
 {
-	public class SimpleEffectDialog : Gtk.Dialog
+	const uint EVENT_DELAY_MILLIS = 100;
+	uint event_delay_timeout_id;
+
+	private delegate bool TimeoutHandler ();
+	TimeoutHandler? timeout_func;
+
+	private EffectData effect_data = null!; // NRT - set by factory method
+
+	// Track widgets with conditional visibility/enabled, so we can update
+	// them when the effect data changes
+	private sealed record ConditionalWidget (
+		Gtk.Widget Widget,
+		Func<bool>? VisibleWhenDelegate,
+		Func<bool>? EnabledWhenDelegate
+	);
+	private readonly List<ConditionalWidget> conditional_widgets = new ();
+
+	/// Since this dialog is used by add-ins, the IAddinLocalizer allows for translations to be
+	/// fetched from the appropriate place.
+	partial void Initialize ()
 	{
-		[ThreadStatic]
-		readonly Random random = new Random ();
+		// --- Initialization (Gtk.Window)
+		Modal = true;
+		WidthRequest = 400;
+		Resizable = false;
 
-		const uint event_delay_millis = 100;
-		uint event_delay_timeout_id;
-		GLib.TimeoutHandler? timeout_func;
+		// --- Initialization (Gtk.Dialog)
 
-		/// Since this dialog is used by add-ins, the IAddinLocalizer allows for translations to be
-		/// fetched from the appropriate place.
-		/// </param>
-		public SimpleEffectDialog (string title, Gdk.Pixbuf icon, object effectData, IAddinLocalizer localizer)
-			: base (title, Core.PintaCore.Chrome.MainWindow, Gtk.DialogFlags.Modal, Core.GtkExtensions.DialogButtonsCancelOk ())
+		this.AddCancelOkButtons ();
+		this.SetDefaultResponse (Gtk.ResponseType.Ok);
+
+		// --- Initialization
+
+		Gtk.Box contentAreaBox = this.GetContentAreaBox ();
+		contentAreaBox.Spacing = 12;
+		contentAreaBox.SetAllMargins (6);
+
+		OnClose += (_, _) => HandleClose ();
+	}
+
+	public static SimpleEffectDialog New (
+		Gtk.Window parent,
+		string title,
+		string iconName,
+		EffectData effectData,
+		IAddinLocalizer localizer,
+		IWorkspaceService workspace)
+	{
+		SimpleEffectDialog dialog = NewWithProperties ([]);
+		dialog.TransientFor = parent;
+		dialog.Title = title;
+		dialog.IconName = iconName;
+
+		Gtk.Box contentAreaBox = dialog.GetContentAreaBox ();
+		foreach (var widget in dialog.GenerateDialogWidgets (effectData, localizer, workspace))
+			contentAreaBox.Append (widget);
+
+		// Keep reference to effect data, so it can be used for handling conditional widgets
+		dialog.effect_data = effectData;
+
+		return dialog;
+	}
+
+	/// <summary>Helper for launching the dialog and connecting custom signal</summary>
+	public static async Task<bool> Launch (
+		Gtk.Window parent,
+		BaseEffect effect,
+		IAddinLocalizer localizer,
+		IWorkspaceService workspace,
+		Action<string?> onChanged)
+	{
+		if (effect.EffectData == null)
+			throw new ArgumentException ($"{effect.EffectData} should not be null", nameof (effect));
+
+		using SimpleEffectDialog dialog = SimpleEffectDialog.New (
+			parent,
+			effect.Name,
+			effect.Icon,
+			effect.EffectData,
+			localizer,
+			workspace);
+
+		dialog.EffectDataChanged += (o, e) => onChanged (e.PropertyName);
+
+		Gtk.ResponseType response = await dialog.RunAsync ();
+
+		dialog.Destroy ();
+
+		return Gtk.ResponseType.Ok == response;
+	}
+
+	public event PropertyChangedEventHandler? EffectDataChanged;
+
+	private void HandleClose ()
+	{
+		// If there is a timeout that hasn't been invoked yet, run it before closing the dialog.
+		if (event_delay_timeout_id == 0) return;
+		GLib.Source.Remove (event_delay_timeout_id);
+		timeout_func?.Invoke ();
+	}
+
+	private IEnumerable<Gtk.Widget> GenerateDialogWidgets (EffectData effectData, IAddinLocalizer localizer, IWorkspaceService workspace) =>
+			effectData
+			.GetType ()
+			.GetMembers ()
+			.Where (IsInstanceFieldOrProperty)
+			.Where (IsCustomProperty)
+			.Where (member => !member.GetCustomAttributes<SkipAttribute> (false).Any ())
+			.Select (CreateSettings)
+			.Select (settings => GenerateWidgetsForMember (settings, effectData, localizer, workspace))
+			.SelectMany (widgets => widgets);
+
+	private bool IsCustomProperty (MemberInfo memberInfo)
+	{
+		return string.Compare (memberInfo.Name, nameof (EffectData.IsDefault), true) != 0;
+	}
+
+	private bool IsInstanceFieldOrProperty (MemberInfo memberInfo)
+	{
+		switch (memberInfo) {
+			case FieldInfo fieldInfo:
+				return !fieldInfo.IsStatic;
+			case PropertyInfo propertyInfo:
+				MethodInfo? getter = propertyInfo.GetGetMethod ();
+				if (getter is null) return false;
+				return !getter.IsStatic;
+			default:
+				return false;
+		}
+	}
+
+	private sealed record MemberSettings (
+		MemberReflector reflector,
+		string caption,
+		string? hint,
+		string? visibleWhenMethodName,
+		string? enabledWhenMethodName
+	);
+
+	private static MemberSettings CreateSettings (MemberInfo memberInfo)
+	{
+		MemberReflector reflector = new (memberInfo);
+
+		string? caption =
+			reflector.Attributes
+			.OfType<CaptionAttribute> ()
+			.Select (h => h.Caption)
+			.FirstOrDefault ();
+
+		string? visibleConditionMethodName =
+			reflector.Attributes
+			.OfType<VisibleWhenAttribute> ()
+			.Select (v => v.ConditionMethodName)
+			.FirstOrDefault ();
+
+		string? enabledConditionMethodName =
+			reflector.Attributes
+			.OfType<EnabledWhenAttribute> ()
+			.Select (e => e.ConditionMethodName)
+			.FirstOrDefault ();
+
+		return new (
+			reflector: reflector,
+			caption: caption ?? MakeCaption (memberInfo.Name),
+			hint: reflector.Attributes.OfType<HintAttribute> ().Select (h => h.Hint).FirstOrDefault (),
+			visibleWhenMethodName: visibleConditionMethodName,
+			enabledWhenMethodName: enabledConditionMethodName);
+	}
+
+	private static string MakeCaption (string name)
+	{
+		return string.Join (string.Empty, GenerateCharacters (name));
+
+		static IEnumerable<char> GenerateCharacters (string name)
 		{
-			Icon = icon;
-			EffectData = effectData;
+			bool nextIsUpperCase = true;
 
-			BorderWidth = 6;
-			ContentArea.Spacing = 12;
-			WidthRequest = 400;
-			Resizable = false;
-			DefaultResponse = Gtk.ResponseType.Ok;
+			foreach (char c in name) {
 
-			BuildDialog (localizer);
+				if (nextIsUpperCase) {
+					yield return char.ToUpper (c);
+					nextIsUpperCase = false;
+					continue;
+				}
+
+				if (c == '_') {
+					yield return ' ';
+					nextIsUpperCase = true;
+					continue;
+				}
+
+				if (char.IsUpper (c))
+					yield return ' ';
+
+				yield return c;
+			}
+		}
+	}
+
+	/// <summary>
+	/// Updates all widgets with conditional attributes.
+	/// </summary>
+	private void UpdateConditionalWidgets (EffectData effectData)
+	{
+		foreach (var widget in conditional_widgets) {
+			if (widget.VisibleWhenDelegate is not null)
+				widget.Widget.Visible = widget.VisibleWhenDelegate ();
+
+			if (widget.EnabledWhenDelegate is not null)
+				widget.Widget.Sensitive = widget.EnabledWhenDelegate ();
+		}
+	}
+	private IEnumerable<Gtk.Widget> GenerateWidgetsForMember (
+		MemberSettings settings,
+		EffectData effectData,
+		IAddinLocalizer localizer,
+		IWorkspaceService workspace)
+	{
+		WidgetFactory? widgetFactory = GetWidgetFactory (settings);
+
+		if (widgetFactory is not null) {
+			Gtk.Widget widget = widgetFactory (localizer.GetString (settings.caption), effectData, settings, workspace);
+
+			// Keep a reference to widget if it has conditional attributes so we can update it later
+			if (settings.visibleWhenMethodName is not null || settings.enabledWhenMethodName is not null) {
+
+				// Create delegates for condition evaluation (do reflection once, not on every update)
+				Func<bool>? visibleDelegate = settings.visibleWhenMethodName is not null
+					? ReflectionHelper.CreateConditionDelegate (effectData, settings.visibleWhenMethodName)
+					: null;
+
+				Func<bool>? enabledDelegate = settings.enabledWhenMethodName is not null
+					? ReflectionHelper.CreateConditionDelegate (effectData, settings.enabledWhenMethodName)
+					: null;
+
+				// Apply the initial state
+				if (visibleDelegate is not null)
+					widget.Visible = visibleDelegate ();
+
+				if (enabledDelegate is not null)
+					widget.Sensitive = enabledDelegate ();
+
+				conditional_widgets.Add (new ConditionalWidget (
+					widget,
+					visibleDelegate,
+					enabledDelegate)
+				);
+			}
+			yield return widget;
 		}
 
-		public object EffectData { get; private set; }
+		if (settings.hint != null)
+			yield return CreateHintLabel (localizer.GetString (settings.hint));
+	}
 
-		public event PropertyChangedEventHandler? EffectDataChanged;
+	private WidgetFactory? GetWidgetFactory (MemberSettings settings)
+	{
+		Type memberType = settings.reflector.MemberType;
+		if (memberType == typeof (RandomSeed))
+			return CreateSeed;
+		else if (memberType == typeof (int))
+			return CreateSlider;
+		else if (memberType == typeof (DegreesAngle))
+			return CreateAnglePicker;
+		else if (memberType == typeof (double))
+			return CreateDoubleSlider;
+		else if (memberType == typeof (string) && settings.reflector.Attributes.OfType<StaticListAttribute> ().Any ())
+			return CreateComboBox;
+		else if (memberType == typeof (bool))
+			return CreateCheckBox;
+		else if (memberType == typeof (PointI))
+			return CreatePointPicker;
+		else if (memberType == typeof (CenterOffset<double>))
+			return CreateOffsetPicker;
+		else if (memberType == typeof (Color))
+			return CreateCairoColorPicker;
+		else if (memberType.IsEnum)
+			return CreateEnumComboBox;
+		else
+			return null;
+	}
 
-		protected override void Dispose (bool disposing)
-		{
-			// If there is a timeout that hasn't been invoked yet, run it before closing the dialog.
-			if (disposing && event_delay_timeout_id != 0) {
-				GLib.Source.Remove (event_delay_timeout_id);
+	private delegate Gtk.Widget WidgetFactory (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace);
+
+	private Gtk.Widget CreateCairoColorPicker (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		Color currentColorCairo =
+			(settings.reflector.GetValue (effectData) is Color c)
+			? c
+			: Color.Black;
+
+		PintaColorButton colorButton = PintaColorButton.New ();
+		colorButton.DisplayColor = currentColorCairo;
+		colorButton.Hexpand = false;
+		colorButton.Halign = Gtk.Align.Start;
+		colorButton.WidthRequest = 80;
+
+		colorButton.OnClicked += async (_, _) => {
+
+			using ColorPickerDialog dialog = ColorPickerDialog.New (
+				this,
+				PintaCore.Palette,
+				new SingleColor (currentColorCairo),
+				primarySelected: true,
+				false,
+				Translations.GetString ("Choose Color"));
+
+			try {
+				Gtk.ResponseType response = await dialog.RunAsync ();
+
+				if (response != Gtk.ResponseType.Ok)
+					return;
+
+				var pick = (SingleColor) dialog.Colors;
+
+				Color newColorCairo = pick.Color;
+
+				colorButton.DisplayColor = newColorCairo;
+				currentColorCairo = newColorCairo;
+
+				SetAndNotify (settings.reflector, effectData, newColorCairo);
+			} finally {
+				dialog.Destroy ();
+			}
+		};
+
+		Gtk.Label label = Gtk.Label.New (caption);
+		label.Halign = Gtk.Align.Start;
+		label.AddCssClass (AdwaitaStyles.Title4);
+
+		Gtk.Box combinedWidget = Gtk.Box.New (Gtk.Orientation.Vertical, 6);
+		combinedWidget.Append (label);
+		combinedWidget.Append (colorButton);
+
+		return combinedWidget;
+	}
+
+	private ComboBoxWidget CreateEnumComboBox (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		var memberNames = Enum.GetNames (settings.reflector.MemberType);
+
+		var mapping_items =
+			from memberName in memberNames
+			let members = settings.reflector.MemberType.GetMember (memberName)
+			let attrs = members[0].GetCustomAttributes<CaptionAttribute> (false).Take (1).ToArray ()
+			let label = attrs.Length > 0 ? attrs[0].Caption : memberName
+			let translatedLabel = Translations.GetString (label)
+			select KeyValuePair.Create (translatedLabel, memberName);
+
+		Dictionary<string, string> label_to_member = new (mapping_items);
+		List<string> labels = [];
+		foreach (var kvp in mapping_items) {
+			label_to_member[kvp.Key] = kvp.Value;
+			labels.Add (kvp.Key);
+		}
+
+		ComboBoxWidget widget = ComboBoxWidget.New (labels);
+		widget.Label = caption;
+
+		if (settings.reflector.GetValue (effectData) is object obj)
+			widget.Active = Array.IndexOf (memberNames, obj.ToString ());
+
+		widget.Changed += (_, _) => SetAndNotify (settings.reflector, effectData, Enum.Parse (settings.reflector.MemberType, label_to_member[widget.ActiveText]));
+
+		return widget;
+	}
+
+	private ComboBoxWidget CreateComboBox (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		IDictionary<string, object>? dict = null;
+
+		foreach (var attr in settings.reflector.Attributes)
+			if (attr is StaticListAttribute attribute && ReflectionHelper.GetValue (effectData, attribute.DictionaryName) is IDictionary<string, object> d)
+				dict = d;
+
+		var entries =
+			dict == null
+			? []
+			: dict.Keys.ToImmutableArray ();
+
+		ComboBoxWidget widget = ComboBoxWidget.New (entries);
+		widget.Label = caption;
+
+		if (settings.reflector.GetValue (effectData) is string s)
+			widget.Active = entries.IndexOf (s);
+
+		widget.Changed += (_, _) => SetAndNotify (settings.reflector, effectData, widget.ActiveText);
+
+		return widget;
+	}
+
+	private HScaleSpinButtonWidget CreateDoubleSlider (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		double initialValue =
+			(settings.reflector.GetValue (effectData) is double i)
+			? i
+			: default;
+
+		var attributes = settings.reflector.Attributes;
+
+		HScaleSpinButtonWidget widget = HScaleSpinButtonWidget.New (initialValue);
+		widget.Label = caption;
+		widget.MinimumValue = attributes.OfType<MinimumValueAttribute> ().Select (m => m.Value).FirstOrDefault (-100);
+		widget.MaximumValue = attributes.OfType<MaximumValueAttribute> ().Select (m => m.Value).FirstOrDefault (100);
+		widget.IncrementValue = attributes.OfType<IncrementValueAttribute> ().Select (i => i.Value).FirstOrDefault (0.01);
+		widget.DigitsValue = attributes.OfType<DigitsValueAttribute> ().Select (d => d.Value).FirstOrDefault (2);
+
+		widget.ValueChanged += (_, _) => {
+			DelayedUpdate (() => {
+				SetAndNotify (settings.reflector, effectData, widget.Value);
+				return false;
+			});
+		};
+
+		return widget;
+	}
+
+	private HScaleSpinButtonWidget CreateSlider (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		int initialValue =
+			(settings.reflector.GetValue (effectData) is int i)
+			? i
+			: default;
+
+		var attributes = settings.reflector.Attributes;
+
+		HScaleSpinButtonWidget widget = HScaleSpinButtonWidget.New (initialValue);
+		widget.Label = caption;
+		widget.MinimumValue = attributes.OfType<MinimumValueAttribute> ().Select (m => m.Value).FirstOrDefault (-100);
+		widget.MaximumValue = attributes.OfType<MaximumValueAttribute> ().Select (m => m.Value).FirstOrDefault (100);
+		widget.IncrementValue = attributes.OfType<IncrementValueAttribute> ().Select (i => i.Value).FirstOrDefault (1.0);
+		widget.DigitsValue = attributes.OfType<DigitsValueAttribute> ().Select (d => d.Value).FirstOrDefault (0);
+
+		widget.ValueChanged += (_, _) => {
+			DelayedUpdate (() => {
+				SetAndNotify (settings.reflector, effectData, widget.ValueAsInt);
+				return false;
+			});
+		};
+
+		return widget;
+	}
+
+	private Gtk.CheckButton CreateCheckBox (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		Gtk.CheckButton widget = Gtk.CheckButton.NewWithLabel (caption);
+
+		if (settings.reflector.GetValue (effectData) is bool b)
+			widget.Active = b;
+
+		widget.OnToggled += (_, _) => SetAndNotify (settings.reflector, effectData, widget.Active);
+
+		return widget;
+	}
+
+	private PointPickerWidget CreateOffsetPicker (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		PointPickerWidget widget = PointPickerWidget.New (workspace, PointI.Zero);
+		widget.Label = caption;
+
+		widget.PointPicked += (_, _) => SetAndNotify (
+			settings.reflector,
+			effectData,
+			widget.Offset);
+
+		return widget;
+	}
+
+	private PointPickerWidget CreatePointPicker (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		PointI initialPoint =
+			(settings.reflector.GetValue (effectData) is PointI p)
+			? p
+			: default;
+
+		PointPickerWidget widget = PointPickerWidget.New (
+			workspace,
+			initialPoint,
+			adjustToWidgetSize: initialPoint == default // If point is (0,0) assume it's first run
+		);
+		widget.Label = caption;
+
+		widget.PointPicked += (_, _) => SetAndNotify (
+			settings.reflector,
+			effectData,
+			widget.Point);
+
+		return widget;
+	}
+
+	private AnglePickerWidget CreateAnglePicker (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		DegreesAngle initialAngle =
+			(settings.reflector.GetValue (effectData) is DegreesAngle d)
+			? d
+			: default;
+
+		AnglePickerWidget widget = AnglePickerWidget.NewWithAngle (initialAngle);
+		widget.Label = caption;
+
+		widget.ValueChanged += (_, _) => {
+			DelayedUpdate (() => {
+				SetAndNotify (settings.reflector, effectData, widget.Value);
+				return false;
+			});
+		};
+
+		return widget;
+	}
+
+	private static Gtk.Label CreateHintLabel (string hint)
+	{
+		Gtk.Label label = Gtk.Label.New (hint);
+		label.Wrap = true;
+		label.Halign = Gtk.Align.Start;
+		label.MaxWidthChars = 40;
+		return label;
+	}
+
+	private void SetAndNotify (MemberReflector reflector, object o, object val)
+	{
+		reflector.SetValue (o, val);
+		EffectDataChanged?.Invoke (this, new PropertyChangedEventArgs (reflector.OriginalMemberInfo.Name));
+
+		// Update conditional widgets when any property changes
+		UpdateConditionalWidgets (effect_data);
+	}
+
+	private Gtk.Widget CreateSeed (
+		string caption,
+		EffectData effectData,
+		MemberSettings settings,
+		IWorkspaceService workspace)
+	{
+		var attributes = settings.reflector.Attributes;
+
+		int minSeed = attributes.OfType<MinimumValueAttribute> ().Select (m => m.Value).FirstOrDefault (0);
+		int maxSeed = attributes.OfType<MaximumValueAttribute> ().Select (m => m.Value).FirstOrDefault (int.MaxValue - 1);
+
+		RandomSeed initialSeed = (RandomSeed) settings.reflector.GetValue (effectData)!;
+
+		Random random = new ();
+
+		Gtk.Label sectionLabel = Gtk.Label.New (null);
+		sectionLabel.AddCssClass (AdwaitaStyles.Title4);
+		sectionLabel.Hexpand = false;
+		sectionLabel.Halign = Gtk.Align.Start;
+		sectionLabel.SetText (caption);
+
+		Gtk.SpinButton seedInput = Gtk.SpinButton.NewWithRange (minSeed, maxSeed, 1);
+		seedInput.Value = initialSeed.Value;
+		seedInput.Hexpand = true;
+		seedInput.OnValueChanged += (_, _) => {
+			DelayedUpdate (() => {
+				SetAndNotify (settings.reflector, effectData, new RandomSeed ((int) seedInput.Value));
+				return false;
+			});
+		};
+
+		Gtk.Button reseedButton = Gtk.Button.NewWithLabel (Translations.GetString ("Reseed"));
+		reseedButton.WidthRequest = 88;
+		reseedButton.CanFocus = true;
+		reseedButton.UseUnderline = true;
+		reseedButton.Hexpand = false;
+		reseedButton.Halign = Gtk.Align.Start;
+
+		reseedButton.OnClicked += (_, _) => seedInput.Value = random.Next (minSeed, maxSeed);
+
+		Gtk.Box controlsBox = Gtk.Box.New (Gtk.Orientation.Horizontal, spacing: 6);
+		controlsBox.Append (reseedButton);
+		controlsBox.Append (seedInput);
+
+		Gtk.Box combinedWidget = Gtk.Box.New (Gtk.Orientation.Vertical, spacing: 6);
+		combinedWidget.Append (sectionLabel);
+		combinedWidget.Append (controlsBox);
+
+		return combinedWidget;
+	}
+
+	private void DelayedUpdate (TimeoutHandler handler)
+	{
+		if (event_delay_timeout_id != 0) {
+			GLib.Source.Remove (event_delay_timeout_id);
+			if (handler != timeout_func)
 				timeout_func?.Invoke ();
-			}
-
-			base.Dispose (disposing);
 		}
 
-		#region EffectData Parser
-		private void BuildDialog (IAddinLocalizer localizer)
-		{
-			var members = EffectData.GetType ().GetMembers ();
-
-			foreach (var mi in members) {
-				var mType = GetTypeForMember (mi);
-
-				if (mType == null)
-					continue;
-
-				string? caption = null;
-				string? hint = null;
-				var skip = false;
-				var combo = false;
-
-				var attrs = mi.GetCustomAttributes (false);
-
-				foreach (var attr in attrs) {
-					if (attr is SkipAttribute)
-						skip = true;
-					else if (attr is CaptionAttribute)
-						caption = ((CaptionAttribute) attr).Caption;
-					else if (attr is HintAttribute)
-						hint = ((HintAttribute) attr).Hint;
-					else if (attr is StaticListAttribute)
-						combo = true;
-
-				}
-
-				if (skip || string.Compare (mi.Name, "IsDefault", true) == 0)
-					continue;
-
-				if (caption == null)
-					caption = MakeCaption (mi.Name);
-
-				if (mType == typeof (int) && (caption == "Seed"))
-					AddWidget (CreateSeed (localizer.GetString (caption), EffectData, mi, attrs));
-				else if (mType == typeof (int))
-					AddWidget (CreateSlider (localizer.GetString (caption), EffectData, mi, attrs));
-				else if (mType == typeof (double) && (caption == "Angle" || caption == "Rotation"))
-					AddWidget (CreateAnglePicker (localizer.GetString (caption), EffectData, mi, attrs));
-				else if (mType == typeof (double))
-					AddWidget (CreateDoubleSlider (localizer.GetString (caption), EffectData, mi, attrs));
-				else if (combo && mType == typeof (string))
-					AddWidget (CreateComboBox (localizer.GetString (caption), EffectData, mi, attrs));
-				else if (mType == typeof (bool))
-					AddWidget (CreateCheckBox (localizer.GetString (caption), EffectData, mi, attrs));
-				else if (mType == typeof (Gdk.Point))
-					AddWidget (CreatePointPicker (localizer.GetString (caption), EffectData, mi, attrs));
-				else if (mType == typeof (Cairo.PointD))
-					AddWidget (CreateOffsetPicker (localizer.GetString (caption), EffectData, mi, attrs));
-				else if (mType.IsEnum)
-					AddWidget (CreateEnumComboBox (localizer.GetString (caption), EffectData, mi, attrs));
-
-				if (hint != null)
-					AddWidget (CreateHintLabel (localizer.GetString (hint)));
-			}
-		}
-
-		private void AddWidget (Gtk.Widget widget)
-		{
-			widget.Show ();
-			ContentArea.Add (widget);
-		}
-		#endregion
-
-		#region Control Builders
-		private ComboBoxWidget CreateEnumComboBox (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			var myType = GetTypeForMember (member)!; // NRT - We're looping through members we got from reflection
-
-			var member_names = Enum.GetNames (myType);
-			var labels = new List<string> ();
-			var label_to_member = new Dictionary<string, string> ();
-
-			foreach (var member_name in member_names) {
-				var members = myType.GetMember (member_name);
-
-				// Look for a Caption attribute that provides a (translated) description.
-				string label;
-				var attrs = members[0].GetCustomAttributes (typeof (CaptionAttribute), false);
-
-				if (attrs.Length > 0)
-					label = Core.Translations.GetString (((CaptionAttribute) attrs[0]).Caption);
-				else
-					label = Core.Translations.GetString (member_name);
-
-				label_to_member[label] = member_name;
-				labels.Add (label);
-			}
-
-			var widget = new ComboBoxWidget (labels.ToArray ()) {
-				Label = caption
-			};
-
-			widget.AddEvents ((int) Gdk.EventMask.ButtonPressMask);
-
-			if (GetValue (member, o) is object obj)
-				widget.Active = ((IList) member_names).IndexOf (obj.ToString ());
-
-			widget.Changed += delegate (object? sender, EventArgs e) {
-				SetValue (member, o, Enum.Parse (myType, label_to_member[widget.ActiveText]));
-			};
-
-			return widget;
-		}
-
-		private ComboBoxWidget CreateComboBox (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			Dictionary<string, object>? dict = null;
-
-			foreach (var attr in attributes) {
-				if (attr is StaticListAttribute attribute && GetValue (attribute.DictionaryName, o) is Dictionary<string, object> d)
-					dict = d;
-			}
-
-			var entries = new List<string> ();
-
-			if (dict != null)
-				foreach (var str in dict.Keys)
-					entries.Add (str);
-
-			var widget = new ComboBoxWidget (entries.ToArray ()) {
-				Label = caption
-			};
-
-			widget.AddEvents ((int) Gdk.EventMask.ButtonPressMask);
-
-			if (GetValue (member, o) is string s)
-				widget.Active = entries.IndexOf (s);
-
-			widget.Changed += delegate (object? sender, EventArgs e) {
-				SetValue (member, o, widget.ActiveText);
-			};
-
-			return widget;
-		}
-
-		private HScaleSpinButtonWidget CreateDoubleSlider (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			var min_value = -100;
-			var max_value = 100;
-			var inc_value = 0.01;
-			var digits_value = 2;
-
-			foreach (var attr in attributes) {
-				if (attr is MinimumValueAttribute min)
-					min_value = min.Value;
-				else if (attr is MaximumValueAttribute max)
-					max_value = max.Value;
-				else if (attr is IncrementValueAttribute inc)
-					inc_value = inc.Value;
-				else if (attr is DigitsValueAttribute digits)
-					digits_value = digits.Value;
-			}
-
-			var widget = new HScaleSpinButtonWidget {
-				Label = caption,
-				MinimumValue = min_value,
-				MaximumValue = max_value,
-				IncrementValue = inc_value,
-				DigitsValue = digits_value
-			};
-
-			if (GetValue (member, o) is double d)
-				widget.DefaultValue = d;
-
-			widget.ValueChanged += delegate (object? sender, EventArgs e) {
-				DelayedUpdate (() => {
-					SetValue (member, o, widget.Value);
-					return false;
-				});
-			};
-
-			return widget;
-		}
-
-		private HScaleSpinButtonWidget CreateSlider (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			var min_value = -100;
-			var max_value = 100;
-			var inc_value = 1.0;
-			var digits_value = 0;
-
-			foreach (var attr in attributes) {
-				if (attr is MinimumValueAttribute min)
-					min_value = min.Value;
-				else if (attr is MaximumValueAttribute max)
-					max_value = max.Value;
-				else if (attr is IncrementValueAttribute inc)
-					inc_value = inc.Value;
-				else if (attr is DigitsValueAttribute digits)
-					digits_value = digits.Value;
-			}
-
-			var widget = new HScaleSpinButtonWidget {
-				Label = caption,
-				MinimumValue = min_value,
-				MaximumValue = max_value,
-				IncrementValue = inc_value,
-				DigitsValue = digits_value
-			};
-
-			if (GetValue (member, o) is int i)
-				widget.DefaultValue = i;
-
-			widget.ValueChanged += delegate (object? sender, EventArgs e) {
-				DelayedUpdate (() => {
-					SetValue (member, o, widget.ValueAsInt);
-					return false;
-				});
-			};
-
-			return widget;
-		}
-
-		private Gtk.CheckButton CreateCheckBox (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			var widget = new Gtk.CheckButton {
-				Label = caption
-			};
-
-			if (GetValue (member, o) is bool b)
-				widget.Active = b;
-
-			widget.Toggled += delegate (object? sender, EventArgs e) {
-				SetValue (member, o, widget.Active);
-			};
-
-			return widget;
-		}
-
-		private PointPickerWidget CreateOffsetPicker (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			var widget = new PointPickerWidget {
-				Label = caption
-			};
-
-			if (GetValue (member, o) is Cairo.PointD p)
-				widget.DefaultOffset = p;
-
-			widget.PointPicked += delegate (object? sender, EventArgs e) {
-				SetValue (member, o, widget.Offset);
-			};
-
-			return widget;
-		}
-
-		private PointPickerWidget CreatePointPicker (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			var widget = new PointPickerWidget {
-				Label = caption
-			};
-
-			if (GetValue (member, o) is Gdk.Point p)
-				widget.DefaultPoint = p;
-
-			widget.PointPicked += delegate (object? sender, EventArgs e) {
-				SetValue (member, o, widget.Point);
-			};
-
-			return widget;
-		}
-
-		private AnglePickerWidget CreateAnglePicker (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			var widget = new AnglePickerWidget {
-				Label = caption
-			};
-
-			if (GetValue (member, o) is double d)
-				widget.DefaultValue = d;
-
-			widget.ValueChanged += delegate (object? sender, EventArgs e) {
-				DelayedUpdate (() => {
-					SetValue (member, o, widget.Value);
-					return false;
-				});
-			};
-
-			return widget;
-		}
-
-		private Gtk.Label CreateHintLabel (string hint)
-		{
-			var label = new Gtk.Label (hint) {
-				LineWrap = true
-			};
-
-			return label;
-		}
-
-		private ReseedButtonWidget CreateSeed (string caption, object o, MemberInfo member, object[] attributes)
-		{
-			var widget = new ReseedButtonWidget ();
-
-			widget.Clicked += delegate (object? sender, EventArgs e) {
-				SetValue (member, o, random.Next ());
-			};
-
-			return widget;
-		}
-		#endregion
-
-		#region Static Reflection Methods
-		private static object? GetValue (MemberInfo mi, object o)
-		{
-			if (mi is FieldInfo fi)
-				return fi.GetValue (o);
-
-			var pi = mi as PropertyInfo;
-
-			return pi?.GetGetMethod ()?.Invoke (o, Array.Empty<object> ());
-		}
-
-		private void SetValue (MemberInfo mi, object o, object val)
-		{
-			string? fieldName = null;
-
-			if (mi is FieldInfo fi) {
-				fi.SetValue (o, val);
-				fieldName = fi.Name;
-			} else if (mi is PropertyInfo pi) {
-				pi.GetSetMethod ()?.Invoke (o, new object[] { val });
-				fieldName = pi.Name;
-			}
-
-			EffectDataChanged?.Invoke (this, new PropertyChangedEventArgs (fieldName));
-		}
-
-		// Returns the type for fields and properties and null for everything else
-		private static Type? GetTypeForMember (MemberInfo mi)
-		{
-			if (mi is FieldInfo fi)
-				return fi.FieldType;
-			else if (mi is PropertyInfo pi)
-				return pi.PropertyType;
-
-			return null;
-		}
-
-		private static string MakeCaption (string name)
-		{
-			var sb = new StringBuilder (name.Length);
-			var nextUp = true;
-
-			foreach (var c in name) {
-				if (nextUp) {
-					sb.Append (char.ToUpper (c));
-					nextUp = false;
-				} else {
-					if (c == '_') {
-						sb.Append (' ');
-						nextUp = true;
-						continue;
-					}
-					if (char.IsUpper (c))
-						sb.Append (' ');
-					sb.Append (c);
-				}
-			}
-
-			return sb.ToString ();
-		}
-
-		private object? GetValue (string name, object o)
-		{
-			if (o.GetType ().GetField (name) is FieldInfo fi)
-				return fi.GetValue (o);
-
-			if (o.GetType ().GetProperty (name) is PropertyInfo pi)
-				return pi.GetGetMethod ()?.Invoke (o, Array.Empty<object> ());
-
-			return null;
-		}
-
-		private void DelayedUpdate (GLib.TimeoutHandler handler)
-		{
-			if (event_delay_timeout_id != 0) {
-				GLib.Source.Remove (event_delay_timeout_id);
-				if (handler != timeout_func)
-					timeout_func?.Invoke ();
-			}
-
-			timeout_func = handler;
-			event_delay_timeout_id = GLib.Timeout.Add (event_delay_millis, () => {
+		timeout_func = handler;
+		event_delay_timeout_id = GLib.Functions.TimeoutAdd (
+			0,
+			EVENT_DELAY_MILLIS,
+			() => {
 				event_delay_timeout_id = 0;
 				timeout_func.Invoke ();
 				timeout_func = null;
 				return false;
-			});
-		}
-		#endregion
+			}
+		);
 	}
 
-	// TODO-GTK3 (addins)
-	// This is a temporary replacement for IAddinLocalizer from Mono.Addins.
-	public interface IAddinLocalizer
-	{
-		string GetString (string msgid);
-	}
-
-	/// <summary>
-	/// Wrapper around Pinta's translation template.
-	/// </summary>
-	public class PintaLocalizer : IAddinLocalizer
-	{
-		public string GetString (string msgid)
-		{
-			return Pinta.Core.Translations.GetString (msgid);
-		}
-	};
 }

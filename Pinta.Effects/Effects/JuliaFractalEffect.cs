@@ -8,136 +8,171 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
-using Pinta.Gui.Widgets;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class JuliaFractalEffect : BaseEffect
 {
-	public class JuliaFractalEffect : BaseEffect
+	public override string Icon
+		=> Resources.Icons.EffectsRenderJuliaFractal;
+
+	public sealed override bool IsTileable
+		=> true;
+
+	public override string Name
+		=> Translations.GetString ("Julia Fractal");
+
+	public override bool IsConfigurable
+		=> true;
+
+	public override string EffectMenuCategory
+		=> Translations.GetString ("Render");
+
+	public JuliaFractalData Data
+		=> (JuliaFractalData) EffectData!;  // NRT - Set in constructor
+
+	private readonly IChromeService chrome;
+	private readonly IPaletteService palette;
+	private readonly IWorkspaceService workspace;
+	public JuliaFractalEffect (IServiceProvider services)
 	{
-		public override string Icon {
-			get { return "Menu.Effects.Render.JuliaFractal.png"; }
+		chrome = services.GetService<IChromeService> ();
+		palette = services.GetService<IPaletteService> ();
+		workspace = services.GetService<IWorkspaceService> ();
+		EffectData = new JuliaFractalData ();
+	}
+
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
+
+	// Algorithm Code Ported From PDN
+
+	private static readonly Julia fractal = new (maxSquared: 10_000);
+
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
+	{
+		JuliaSettings settings = CreateSettings (destination);
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
+		foreach (var pixel in Tiling.GeneratePixelOffsets (roi, settings.canvasSize))
+			destinationData[pixel.memoryOffset] = GetPixelColor (settings, pixel.coordinates);
+	}
+
+	private sealed record JuliaSettings (
+		Size canvasSize,
+		double invH,
+		double invZoom,
+		double invQuality,
+		double aspect,
+		int count,
+		double invCount,
+		Matrix3x2D rotation,
+		int factor,
+		ColorGradient<ColorBgra> colorGradient);
+	private JuliaSettings CreateSettings (ImageSurface destination)
+	{
+		// Reference to effect data, to prevent repeated casting
+		// TODO: Remove if and when reading the property doesn't require casting
+		var data = Data;
+
+		Size canvasSize = destination.GetSize ();
+		int count = data.Quality * data.Quality + 1;
+
+		var baseGradient =
+			GradientHelper
+			.CreateBaseGradientForEffect (
+				palette,
+				data.ColorSchemeSource,
+				data.ColorScheme,
+				data.ColorSchemeSeed)
+			.Resized (NumberRange.Create<double> (0, 1023));
+
+		return new (
+			canvasSize: canvasSize,
+			invH: 1.0 / canvasSize.Height,
+			invZoom: 1.0 / data.Zoom,
+			invQuality: 1.0 / data.Quality,
+			aspect: canvasSize.Height / (double) canvasSize.Width,
+			count: count,
+			invCount: 1.0 / count,
+			rotation: Matrix3x2D.CreateRotation (data.Angle.ToRadians ()),
+			factor: data.Factor,
+			colorGradient: data.ReverseColorScheme ? baseGradient.Reversed () : baseGradient
+		);
+	}
+
+	const double Jr = 0.3125;
+	const double Ji = 0.03;
+
+	private static ColorBgra GetPixelColor (JuliaSettings settings, PointI target)
+	{
+		double baseTransfX = 2.0 * target.X - settings.canvasSize.Width;
+		double baseTransfY = 2.0 * target.Y - settings.canvasSize.Height;
+
+		ColorBgra.Blender aggregate = new ();
+
+		for (int i = 0; i < settings.count; i++) {
+
+			PointD transformed = new (
+				X: (baseTransfX + (i * settings.invCount)) * settings.invH,
+				Y: (baseTransfY + ((i * settings.invQuality) % 1)) * settings.invH);
+
+			PointD p = transformed.Transformed (settings.rotation);
+
+			PointD jLoc = new (
+				X: (p.X - p.Y * settings.aspect) * settings.invZoom,
+				Y: (p.Y + p.X * settings.aspect) * settings.invZoom);
+
+			double j = fractal.Compute (jLoc, Jr, Ji);
+
+			double c = Math.Clamp (
+				settings.factor * j,
+				settings.colorGradient.Range.Lower,
+				settings.colorGradient.Range.Upper);
+
+			aggregate += settings.colorGradient.GetColor (c);
 		}
 
-		public override string Name {
-			get { return Translations.GetString ("Julia Fractal"); }
-		}
+		return aggregate.Blend ();
+	}
 
-		public override bool IsConfigurable {
-			get { return true; }
-		}
+	public sealed class JuliaFractalData : EffectData
+	{
+		[Caption ("Factor")]
+		[MinimumValue (1), MaximumValue (10)]
+		public int Factor { get; set; } = 4;
 
-		public override string EffectMenuCategory {
-			get { return Translations.GetString ("Render"); }
-		}
+		[Caption ("Quality")]
+		[MinimumValue (1), MaximumValue (5)]
+		public int Quality { get; set; } = 2;
 
-		public JuliaFractalData Data { get { return (JuliaFractalData) EffectData!; } } // NRT - Set in constructor
+		[Caption ("Zoom")]
+		[MinimumValue (0), MaximumValue (50), IncrementValue (0.5)]
+		public double Zoom { get; set; } = 1;
 
-		public JuliaFractalEffect ()
-		{
-			EffectData = new JuliaFractalData ();
-		}
+		[Caption ("Color Scheme Source")]
+		public ColorSchemeSource ColorSchemeSource { get; set; } = ColorSchemeSource.PresetGradient;
 
-		public override bool LaunchConfiguration ()
-		{
-			return EffectHelper.LaunchSimpleEffectDialog (this);
-		}
+		[Caption ("Color Scheme")]
+		[VisibleWhen (nameof (ShowColorScheme))]
+		public PresetGradients ColorScheme { get; set; } = PresetGradients.Bonfire;
 
-		#region Algorithm Code Ported From PDN
-		private static readonly double log2_10000 = Math.Log (10000);
+		[Caption ("Random Color Scheme Seed")]
+		[VisibleWhen (nameof (ShowColorSchemeSeed))]
+		public RandomSeed ColorSchemeSeed { get; set; } = new (0);
 
-		private static double Julia (double x, double y, double r, double i)
-		{
-			double c = 0;
+		[Caption ("Reverse Color Scheme")]
+		public bool ReverseColorScheme { get; set; } = false;
 
-			while (c < 256 && x * x + y * y < 10000) {
-				double t = x;
-				x = x * x - y * y + r;
-				y = 2 * t * y + i;
-				++c;
-			}
+		[Caption ("Angle")]
+		public DegreesAngle Angle { get; set; } = new (0);
 
-			c -= 2 - 2 * log2_10000 / Math.Log (x * x + y * y);
+		[Skip]
+		public bool ShowColorScheme => ColorSchemeSource == ColorSchemeSource.PresetGradient;
 
-			return c;
-		}
-
-		unsafe public override void Render (ImageSurface src, ImageSurface dst, Gdk.Rectangle[] rois)
-		{
-			const double jr = 0.3125;
-			const double ji = 0.03;
-
-			int w = dst.Width;
-			int h = dst.Height;
-			double invH = 1.0 / h;
-			double invZoom = 1.0 / Data.Zoom;
-			double invQuality = 1.0 / Data.Quality;
-			double aspect = (double) h / (double) w;
-			int count = Data.Quality * Data.Quality + 1;
-			double invCount = 1.0 / (double) count;
-			double angleTheta = (Data.Angle * Math.PI * 2) / 360.0;
-
-			ColorBgra* dst_dataptr = (ColorBgra*) dst.DataPtr;
-			int dst_width = dst.Width;
-
-			foreach (Gdk.Rectangle rect in rois) {
-				for (int y = rect.Top; y <= rect.GetBottom (); y++) {
-					ColorBgra* dstPtr = dst.GetPointAddressUnchecked (dst_dataptr, dst_width, rect.Left, y);
-
-					for (int x = rect.Left; x <= rect.GetRight (); x++) {
-						int r = 0;
-						int g = 0;
-						int b = 0;
-						int a = 0;
-
-						for (double i = 0; i < count; i++) {
-							double u = (2.0 * x - w + (i * invCount)) * invH;
-							double v = (2.0 * y - h + ((i * invQuality) % 1)) * invH;
-
-							double radius = Math.Sqrt ((u * u) + (v * v));
-							double radiusP = radius;
-							double theta = Math.Atan2 (v, u);
-							double thetaP = theta + angleTheta;
-
-							double uP = radiusP * Math.Cos (thetaP);
-							double vP = radiusP * Math.Sin (thetaP);
-
-							double jX = (uP - vP * aspect) * invZoom;
-							double jY = (vP + uP * aspect) * invZoom;
-
-							double j = Julia (jX, jY, jr, ji);
-
-							double c = Data.Factor * j;
-
-							b += Utility.ClampToByte (c - 768);
-							g += Utility.ClampToByte (c - 512);
-							r += Utility.ClampToByte (c - 256);
-							a += Utility.ClampToByte (c - 0);
-						}
-
-						*dstPtr = ColorBgra.FromBgra (Utility.ClampToByte (b / count), Utility.ClampToByte (g / count), Utility.ClampToByte (r / count), Utility.ClampToByte (a / count));
-
-						++dstPtr;
-					}
-				}
-			}
-		}
-		#endregion
-
-		public class JuliaFractalData : EffectData
-		{
-			[Caption ("Factor"), MinimumValue (1), MaximumValue (10)]
-			public int Factor = 4;
-
-			[Caption ("Quality"), MinimumValue (1), MaximumValue (5)]
-			public int Quality = 2;
-
-			[Caption ("Zoom"), MinimumValue (0), MaximumValue (50)]
-			public int Zoom = 1;
-
-			[Caption ("Angle")]
-			public double Angle = 0;
-		}
+		[Skip]
+		public bool ShowColorSchemeSeed => ColorSchemeSource == ColorSchemeSource.Random;
 	}
 }

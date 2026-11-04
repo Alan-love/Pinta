@@ -29,37 +29,39 @@ using Cairo;
 
 using Pinta.Core;
 
-namespace Pinta.Tools.Brushes
+namespace Pinta.Tools.Brushes;
+
+internal sealed class GridBrush : BasePaintBrush
 {
-	public class GridBrush : BasePaintBrush
+	public override string Name => Translations.GetString ("Grid");
+
+	public override double StrokeAlphaMultiplier => 0.05;
+
+	private readonly Random random = new ();
+
+	protected override RectangleI OnMouseMove (
+		Context g,
+		ImageSurface surface,
+		BrushStrokeArgs strokeArgs)
 	{
-		public override string Name {
-			get { return Translations.GetString ("Grid"); }
+		PointD c = new (
+			X: Math.Round (strokeArgs.CurrentPosition.X / 100.0) * 100.0,
+			Y: Math.Round (strokeArgs.CurrentPosition.Y / 100.0) * 100.0);
+
+		PointD d = new (
+			X: (c.X - strokeArgs.CurrentPosition.X) * 10.0,
+			Y: (c.Y - strokeArgs.CurrentPosition.Y) * 10.0);
+
+		for (int i = 0; i < 50; i++) {
+			g.MoveTo (c.X, c.Y);
+			g.QuadraticCurveTo (
+				strokeArgs.CurrentPosition.X + random.NextDouble () * d.X,
+				strokeArgs.CurrentPosition.Y + random.NextDouble () * d.Y,
+				c.X,
+				c.Y);
+			g.Stroke ();
 		}
 
-		public override double StrokeAlphaMultiplier {
-			get { return 0.05; }
-		}
-
-		protected override Gdk.Rectangle OnMouseMove (Context g, Color strokeColor, ImageSurface surface,
-							      int x, int y, int lastX, int lastY)
-		{
-			double cx = Math.Round (x / 100.0) * 100.0;
-			double cy = Math.Round (y / 100.0) * 100.0;
-			double dx = (cx - x) * 10.0;
-			double dy = (cy - y) * 10.0;
-
-			for (int i = 0; i < 50; i++) {
-				g.MoveTo (cx, cy);
-				g.QuadraticCurveTo (
-					x + Random.NextDouble () * dx,
-					y + Random.NextDouble () * dy,
-					cx,
-					cy);
-				g.Stroke ();
-			}
-
-			return Gdk.Rectangle.Zero;
-		}
+		return RectangleI.Zero;
 	}
 }

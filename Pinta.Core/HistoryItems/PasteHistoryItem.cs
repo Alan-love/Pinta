@@ -24,74 +24,60 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-using System;
-using Cairo;
-using Gtk;
+namespace Pinta.Core;
 
-namespace Pinta.Core
+public sealed class PasteHistoryItem : BaseHistoryItem
 {
-	public class PasteHistoryItem : BaseHistoryItem
+	private readonly Cairo.ImageSurface paste_image;
+	private DocumentSelection old_selection;
+
+	public override bool CausesDirty => true;
+
+	public PasteHistoryItem (Cairo.ImageSurface pasteImage, DocumentSelection oldSelection)
 	{
-		private Gdk.Pixbuf paste_image;
-		private DocumentSelection old_selection;
+		Text = Translations.GetString ("Paste");
+		Icon = Resources.StandardIcons.EditPaste;
 
-		public override bool CausesDirty { get { return true; } }
+		paste_image = pasteImage;
+		old_selection = oldSelection;
+	}
 
-		public PasteHistoryItem (Gdk.Pixbuf pasteImage, DocumentSelection oldSelection)
-		{
-			Text = Translations.GetString ("Paste");
-			Icon = Resources.StandardIcons.EditPaste;
+	public override void Redo ()
+	{
+		Document doc = PintaCore.Workspace.ActiveDocument;
 
-			paste_image = pasteImage;
-			old_selection = oldSelection;
-		}
+		// Copy the paste to the temp layer
+		doc.Layers.CreateSelectionLayer ();
+		doc.Layers.ShowSelectionLayer = true;
 
-		public override void Redo ()
-		{
-			Document doc = PintaCore.Workspace.ActiveDocument;
+		using Cairo.Context g = new (doc.Layers.SelectionLayer.Surface);
+		g.SetSourceSurface (paste_image, 0, 0);
+		g.Paint ();
 
-			// Copy the paste to the temp layer
-			doc.Layers.CreateSelectionLayer ();
-			doc.Layers.ShowSelectionLayer = true;
+		Swap ();
 
-			using (Cairo.Context g = new Cairo.Context (doc.Layers.SelectionLayer.Surface)) {
-				g.DrawPixbuf (paste_image, new Cairo.Point (0, 0));
-			}
+		PintaCore.Workspace.Invalidate ();
+		PintaCore.Tools.SetCurrentTool ("MoveSelectedTool");
+	}
 
-			Swap ();
+	public override void Undo ()
+	{
+		var doc = PintaCore.Workspace.ActiveDocument;
 
-			PintaCore.Workspace.Invalidate ();
-			PintaCore.Tools.SetCurrentTool ("MoveSelectedTool");
-		}
+		Swap ();
 
-		public override void Undo ()
-		{
-			var doc = PintaCore.Workspace.ActiveDocument;
+		doc.Layers.DestroySelectionLayer ();
+		PintaCore.Workspace.Invalidate ();
+	}
 
-			Swap ();
+	private void Swap ()
+	{
+		// Swap the selection paths, and whether the
+		// selection path should be visible
+		Document doc = PintaCore.Workspace.ActiveDocument;
 
-			doc.Layers.DestroySelectionLayer ();
-			PintaCore.Workspace.Invalidate ();
-		}
-
-		public override void Dispose ()
-		{
-			if (paste_image != null)
-				(paste_image as IDisposable).Dispose ();
-
-			if (old_selection != null)
-				old_selection.Dispose ();
-		}
-
-		private void Swap ()
-		{
-			// Swap the selection paths, and whether the
-			// selection path should be visible
-			Document doc = PintaCore.Workspace.ActiveDocument;
-
-			DocumentSelection swap_selection = doc.Selection;
-			doc.Selection = old_selection;
-			old_selection = swap_selection;
-		}
+		DocumentSelection swap_selection = doc.Selection;
+		doc.Selection = old_selection;
+		old_selection = swap_selection;
 	}
 }

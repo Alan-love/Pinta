@@ -1,21 +1,21 @@
-// 
+//
 // LivePreviewManager.cs
-//  
+//
 // Author:
 //       Greg Lowe <greg@vis.net.nz>
-// 
+//
 // Copyright (c) 2010 Greg Lowe
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -29,362 +29,302 @@
 #endif
 
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Threading;
+using System.Threading.Tasks;
+using Cairo;
+using Mono.Addins.Localization;
 using Debug = System.Diagnostics.Debug;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public interface ILivePreview
 {
+	RectangleI RenderBounds { get; }
+	bool IsEnabled { get; }
+	ImageSurface LivePreviewSurface { get; }
+}
 
-	public class LivePreviewManager
+public sealed class LivePreviewManager : ILivePreview
+{
+	private readonly WorkspaceManager workspace;
+	private readonly ToolManager tools;
+	private readonly SystemManager system;
+	private readonly ChromeManager chrome;
+
+	internal LivePreviewManager (
+		WorkspaceManager workspaceManager,
+		ToolManager toolManager,
+		SystemManager systemManager,
+		ChromeManager chromeManager)
 	{
-		// NRT - These are set in Start(). This should be rewritten to be provably non-null.
-		bool live_preview_enabled;
-		Layer layer = null!;
-		BaseEffect effect = null!;
-		Cairo.Path? selection_path;
+		IsEnabled = false;
 
-		bool apply_live_preview_flag;
-		bool cancel_live_preview_flag;
+		workspace = workspaceManager;
+		tools = toolManager;
+		system = systemManager;
+		chrome = chromeManager;
+	}
 
-		Cairo.ImageSurface live_preview_surface = null!;
-		Gdk.Rectangle render_bounds;
-		SimpleHistoryItem history_item = null!;
+	public ImageSurface LivePreviewSurface { get; private set; } = null!;
+	public RectangleI RenderBounds { get; private set; }
+	public bool IsEnabled { get; private set; }
 
-		AsyncEffectRenderer renderer = null!;
+	public async void Start (BaseEffect effect)
+	{
+		if (IsEnabled)
+			throw new InvalidOperationException ("LivePreviewManager.Start() called while live preview is already enabled.");
 
-		internal LivePreviewManager ()
-		{
-			live_preview_enabled = false;
+		tools.Commit ();
 
-			RenderUpdated += LivePreview_RenderUpdated;
-		}
+		Document doc = workspace.ActiveDocument;
+		DocumentSelection selection = doc.Selection;
 
-		public bool IsEnabled { get { return live_preview_enabled; } }
-		public Cairo.ImageSurface LivePreviewSurface { get { return live_preview_surface; } }
-		public Gdk.Rectangle RenderBounds { get { return render_bounds; } }
+		IsEnabled = true;
 
-		public event EventHandler<LivePreviewStartedEventArgs>? Started;
-		public event EventHandler<LivePreviewRenderUpdatedEventArgs>? RenderUpdated;
-		public event EventHandler<LivePreviewEndedEventArgs>? Ended;
+		//TODO Use the current tool layer instead.
+		LivePreviewSurface = CairoExtensions.CreateImageSurface (
+			Format.Argb32,
+			workspace.ImageSize.Width,
+			workspace.ImageSize.Height);
 
-		public void Start (BaseEffect effect)
-		{
-			if (live_preview_enabled)
-				throw new InvalidOperationException ("LivePreviewManager.Start() called while live preview is already enabled.");
+		RenderBounds = selection.Visible ? selection.GetBounds ().ToInt () : LivePreviewSurface.GetBounds ();
+		RenderBounds = workspace.ClampToImageSize (RenderBounds);
 
-			// Create live preview surface.
-			// Start rendering.
-			// Listen for changes to effectConfiguration object, and restart render if needed.
+		const uint UPDATE_MILLISECONDS = 100;
 
-			var doc = PintaCore.Workspace.ActiveDocument;
+		AsyncEffectRenderer.Settings settings = new (
+			threadCount: system.RenderThreads,
+			renderBounds: RenderBounds,
+			effectIsTileable: effect.IsTileable);
 
-			live_preview_enabled = true;
-			apply_live_preview_flag = false;
-			cancel_live_preview_flag = false;
+		Layer layer = doc.Layers.CurrentUserLayer;
 
-			layer = doc.Layers.CurrentUserLayer;
-			this.effect = effect;
+		string effectName = effect.Name;
 
-			//TODO Use the current tool layer instead.
-			live_preview_surface = CairoExtensions.CreateImageSurface (Cairo.Format.Argb32,
-											  PintaCore.Workspace.ImageSize.Width,
-											  PintaCore.Workspace.ImageSize.Height);
+		SimpleHistoryItem historyItem = new (effect.Icon, effect.Name);
+		historyItem.TakeSnapshotOfLayer (doc.Layers.CurrentUserLayerIndex);
 
-			// Handle selection path.
-			PintaCore.Tools.Commit ();
-			var selection = doc.Selection;
-			selection_path = (selection.Visible) ? selection.SelectionPath : null;
-			render_bounds = (selection_path != null) ? selection_path.GetBounds () : live_preview_surface.GetBounds ();
-			render_bounds = PintaCore.Workspace.ClampToImageSize (render_bounds);
+		RenderSession session = new (
+			chrome,
+			workspace,
+			effect,
+			() => AsyncEffectRenderer.Start (
+				settings,
+				effect,
+				layer.Surface,
+				LivePreviewSurface
+			)
+		);
 
-			history_item = new SimpleHistoryItem (effect.Icon, effect.Name);
-			history_item.TakeSnapshotOfLayer (doc.Layers.CurrentUserLayerIndex);
 
+		IProgressDialog dialog = chrome.ProgressDialog;
+		dialog.Title = Translations.GetString ("Rendering Effect");
+		dialog.Text = effect.Name;
+		dialog.Progress = 0;
+		dialog.Canceled += HandleProgressDialogCancel;
+
+		bool renderAlive = true;
+		bool userCanceled = false;
+
+		try {
 			// Paint the pre-effect layer surface into into the working surface.
-			using (var ctx = new Cairo.Context (live_preview_surface)) {
-				layer.Draw (ctx, layer.Surface, 1);
-			}
-
-			if (effect.EffectData != null)
-				effect.EffectData.PropertyChanged += EffectData_PropertyChanged;
-
-			if (Started != null) {
-				Started (this, new LivePreviewStartedEventArgs ());
-			}
-
-			var settings = new AsyncEffectRenderer.Settings () {
-				ThreadCount = PintaCore.System.RenderThreads,
-				TileWidth = render_bounds.Width,
-				TileHeight = 1,
-				ThreadPriority = ThreadPriority.BelowNormal
-			};
+			using Context ctx = new (LivePreviewSurface);
+			layer.Draw (ctx, layer.Surface, 1);
 
 			Debug.WriteLine (DateTime.Now.ToString ("HH:mm:ss:ffff") + "Start Live preview.");
 
-			renderer = new Renderer (this, settings);
-			renderer.Start (effect, layer.Surface, live_preview_surface, render_bounds);
+			session.Start ();
 
-			if (effect.IsConfigurable) {
-				if (!effect.LaunchConfiguration ()) {
-					PintaCore.Chrome.MainWindowBusy = true;
-					Cancel ();
-				} else {
-					PintaCore.Chrome.MainWindowBusy = true;
-					Apply ();
+			using GLibTimer _ = GLib.Functions.TimeoutAdd (
+				0,
+				UPDATE_MILLISECONDS,
+				() => {
+					if (!renderAlive) return false;
+					PollForUpdate (session.CurrentRender);
+					return true; // Keep ticking as long as the effect is active.
 				}
-			} else {
-				PintaCore.Chrome.MainWindowBusy = true;
-				Apply ();
-			}
-		}
+			);
 
-		// Used by the workspace drawing area expose render loop.
-		// Takes care of the clipping.
-		public void RenderLivePreviewLayer (Cairo.Context ctx, double opacity)
-		{
-			if (!IsEnabled)
-				throw new InvalidOperationException ("Tried to render a live preview after live preview has ended.");
+			bool userConfirmed = !effect.IsConfigurable || await effect.LaunchConfiguration (session);
 
-			// TODO remove seam around selection during live preview.
+			chrome.MainWindowBusy = true;
 
-			ctx.Save ();
-			if (selection_path != null) {
-
-				// Paint area outsize of the selection path, with the pre-effect image.
-				var imageSize = PintaCore.Workspace.ImageSize;
-				ctx.Rectangle (0, 0, imageSize.Width, imageSize.Height);
-				ctx.AppendPath (selection_path);
-				ctx.Clip ();
-				layer.Draw (ctx, layer.Surface, opacity);
-				ctx.ResetClip ();
-
-				// Paint area inside the selection path, with the post-effect image.
-				ctx.AppendPath (selection_path);
-				ctx.Clip ();
-
-				layer.Draw (ctx, live_preview_surface, opacity);
-				ctx.PaintWithAlpha (opacity);
-
-				ctx.AppendPath (selection_path);
-				ctx.FillRule = Cairo.FillRule.EvenOdd;
-				ctx.Clip ();
-			} else {
-
-				layer.Draw (ctx, live_preview_surface, opacity);
-			}
-			ctx.Restore ();
-		}
-
-		// Method asks render task to complete, and then returns immediately. The cancel 
-		// is not actually complete until the LivePreviewRenderCompleted event is fired.
-		void Cancel ()
-		{
-			Debug.WriteLine (DateTime.Now.ToString ("HH:mm:ss:ffff") + " LivePreviewManager.Cancel()");
-
-			cancel_live_preview_flag = true;
-
-			if (renderer != null)
-				renderer.Cancel ();
-
-			// Show a busy cursor, and make the main window insensitive,
-			// until the cancel has completed.
-			PintaCore.Chrome.MainWindowBusy = true;
-
-			if (renderer == null || !renderer.IsRendering)
-				HandleCancel ();
-		}
-
-		// Called from asynchronously from Renderer.OnCompletion ()
-		void HandleCancel ()
-		{
-			Debug.WriteLine ("LivePreviewManager.HandleCancel()");
-
-			FireLivePreviewEndedEvent (RenderStatus.Canceled, null);
-			live_preview_enabled = false;
-
-			if (live_preview_surface != null) {
-				(live_preview_surface as IDisposable).Dispose ();
+			if (!userConfirmed) {
+				Debug.WriteLine ("User decided not to proceed with the render");
+				await session.StopAsync ();
+				return;
 			}
 
-			PintaCore.Workspace.Invalidate ();
-			CleanUp ();
-		}
-
-		void Apply ()
-		{
+			// The user confirmed, so show progress dialog
 			Debug.WriteLine (DateTime.Now.ToString ("HH:mm:ss:ffff") + "LivePreviewManager.Apply()");
-			apply_live_preview_flag = true;
 
-			if (!renderer.IsRendering) {
-				HandleApply ();
-			} else {
-				var dialog = PintaCore.Chrome.ProgressDialog;
-				dialog.Title = Translations.GetString ("Rendering Effect");
-				dialog.Text = effect.Name;
-				dialog.Progress = renderer.Progress;
-				dialog.Canceled += HandleProgressDialogCancel;
-				dialog.Show ();
+			dialog.Show ();
+
+			CompletionInfo result = await session.WaitForCompletionAsync ();
+
+			// Final poll after the renderer finishes to ensure the last-rendered tiles are displayed.
+			PollForUpdate (session.CurrentRender);
+
+			foreach (var ex in result.Errors)
+				Debug.WriteLine ("AsyncEffectRenderer Error while rendering effect: " + effectName + " exception: " + ex.Message + "\n" + ex.StackTrace);
+
+			if (userCanceled) {
+				Debug.WriteLine ("*User* decided to cancel the render");
+				return;
 			}
+
+			Debug.WriteLine ("Render completed without the user canceling");
+
+			using Context context = new (layer.Surface);
+
+			context.Save ();
+			workspace.ActiveDocument.Selection.Clip (context);
+
+			layer.DrawWithOperator (context, LivePreviewSurface, Operator.Source);
+			context.Restore ();
+
+			workspace.ActiveDocument.History.PushNewItem (historyItem);
+
+		} finally {
+
+			IsEnabled = false;
+			LivePreviewSurface = null!;
+			workspace.Invalidate ();
+
+			chrome.MainWindowBusy = false;
+
+			dialog.Canceled -= HandleProgressDialogCancel;
+
+			dialog.Hide ();
+
+			renderAlive = false;
 		}
+
+		// === Methods ===
 
 		void HandleProgressDialogCancel (object? o, EventArgs e)
 		{
-			Cancel ();
+			userCanceled = true;
+			session.Cancel ();
 		}
 
-		// Called from asynchronously from Renderer.OnCompletion ()
-		void HandleApply ()
+		// This method now polls the renderer for its state instead of being a passive event handler.
+		void PollForUpdate (RenderHandle renderTask)
 		{
-			Debug.WriteLine ("LivePreviewManager.HandleApply()");
+			Debug.WriteLine (DateTime.Now.ToString ("HH:mm:ss:ffff") + " Polling for update.");
 
-			using (var ctx = new Cairo.Context (layer.Surface)) {
+			chrome.ProgressDialog.Progress = renderTask.Progress;
 
-				ctx.Save ();
-				PintaCore.Workspace.ActiveDocument.Selection.Clip (ctx);
+			if (!renderTask.TryConsumeBounds (out RectangleI updatedBounds))
+				return;
 
-				layer.DrawWithOperator (ctx, live_preview_surface, Cairo.Operator.Source);
-				ctx.Restore ();
-			}
-
-			PintaCore.Workspace.ActiveDocument.History.PushNewItem (history_item);
-			history_item = null!;
-
-			FireLivePreviewEndedEvent (RenderStatus.Completed, null);
-
-			live_preview_enabled = false;
-
-			PintaCore.Workspace.Invalidate (); //TODO keep track of dirty bounds.
-			CleanUp ();
-		}
-
-		// Clean up resources when live preview is disabled.
-		void CleanUp ()
-		{
-			Debug.WriteLine (DateTime.Now.ToString ("HH:mm:ss:ffff") + " LivePreviewManager.CleanUp()");
-
-			live_preview_enabled = false;
-
-			if (effect != null) {
-				if (effect.EffectData != null)
-					effect.EffectData.PropertyChanged -= EffectData_PropertyChanged;
-				effect = null!;
-			}
-
-			live_preview_surface = null!;
-
-			if (renderer != null) {
-				renderer.Dispose ();
-				renderer = null!;
-			}
-
-			if (history_item != null) {
-				history_item.Dispose ();
-				history_item = null!;
-			}
-
-			// Hide progress dialog and clean up events.
-			var dialog = PintaCore.Chrome.ProgressDialog;
-			dialog.Hide ();
-			dialog.Canceled -= HandleProgressDialogCancel;
-
-			PintaCore.Chrome.MainWindowBusy = false;
-		}
-
-		void EffectData_PropertyChanged (object? sender, PropertyChangedEventArgs e)
-		{
-			//TODO calculate bounds.
-			renderer.Start (effect, layer.Surface, live_preview_surface, render_bounds);
-		}
-
-		class Renderer : AsyncEffectRenderer
-		{
-			LivePreviewManager manager;
-
-			internal Renderer (LivePreviewManager manager, AsyncEffectRenderer.Settings settings)
-				: base (settings)
-			{
-				this.manager = manager;
-			}
-
-			protected override void OnUpdate (double progress, Gdk.Rectangle updatedBounds)
-			{
-				Debug.WriteLine (DateTime.Now.ToString ("HH:mm:ss:ffff") + " LivePreviewManager.OnUpdate() progress: " + progress);
-				PintaCore.Chrome.ProgressDialog.Progress = progress;
-				manager.FireLivePreviewRenderUpdatedEvent (progress, updatedBounds);
-			}
-
-			protected override void OnCompletion (bool cancelled, Exception[]? exceptions)
-			{
-				Debug.WriteLine (DateTime.Now.ToString ("HH:mm:ss:ffff") + " LivePreviewManager.OnCompletion() cancelled: " + cancelled);
-
-				if (!manager.live_preview_enabled)
-					return;
-
-				if (manager.cancel_live_preview_flag)
-					manager.HandleCancel ();
-				else if (manager.apply_live_preview_flag)
-					manager.HandleApply ();
-			}
-		}
-
-		void FireLivePreviewEndedEvent (RenderStatus status, Exception? ex)
-		{
-			if (Ended != null) {
-				var args = new LivePreviewEndedEventArgs (status, ex);
-				Ended (this, args);
-			}
-		}
-
-		void FireLivePreviewRenderUpdatedEvent (double progress, Gdk.Rectangle bounds)
-		{
-
-			if (RenderUpdated != null) {
-				RenderUpdated (this, new LivePreviewRenderUpdatedEventArgs (progress, bounds));
-			}
-		}
-
-		private void LivePreview_RenderUpdated (object? o, LivePreviewRenderUpdatedEventArgs args)
-		{
-			double scale = PintaCore.Workspace.Scale;
-			var offset = PintaCore.Workspace.Offset;
-
-			var bounds = args.Bounds;
+			double scale = workspace.Scale;
 
 			// Transform bounds (Image -> Canvas -> Window)
 
 			// Calculate canvas bounds.
-			double x1 = bounds.Left * scale;
-			double y1 = bounds.Top * scale;
-			double x2 = (bounds.GetRight () + 1) * scale;
-			double y2 = (bounds.GetBottom () + 1) * scale;
+			PointD bounds1 = new (
+				X: updatedBounds.Left * scale,
+				Y: updatedBounds.Top * scale);
+
+			PointD bounds2 = new (
+				X: (updatedBounds.Right + 1) * scale,
+				Y: (updatedBounds.Bottom + 1) * scale);
 
 			// TODO Figure out why when scale > 1 that I need add on an
 			// extra pixel of padding.
 			// I must being doing something wrong here.
 			if (scale > 1.0) {
 				//x1 = (bounds.Left-1) * scale;
-				y1 = (bounds.Top - 1) * scale;
+				bounds1 = bounds1 with { Y = (updatedBounds.Top - 1) * scale };
 				//x2 = (bounds.Right+1) * scale;
 				//y2 = (bounds.Bottom+1) * scale;
 			}
 
-			// Calculate window bounds.
-			x1 += offset.X;
-			y1 += offset.Y;
-			x2 += offset.X;
-			y2 += offset.Y;
-
-			// Convert to integer, carefull not to miss paritally covered
+			// Convert to integer, carefully not to miss partially covered
 			// pixels by rounding incorrectly.
-			int x = (int) Math.Floor (x1);
-			int y = (int) Math.Floor (y1);
-			int width = (int) Math.Ceiling (x2) - x;
-			int height = (int) Math.Ceiling (y2) - y;
+			int x = (int) Math.Floor (bounds1.X);
+			int y = (int) Math.Floor (bounds1.Y);
+			RectangleI areaToInvalidate = new (
+				X: x,
+				Y: y,
+				Width: (int) Math.Ceiling (bounds2.X) - x,
+				Height: (int) Math.Ceiling (bounds2.Y) - y);
 
-			// Tell GTK to expose the drawing area.			
-			PintaCore.Workspace.ActiveWorkspace.Canvas.QueueDrawArea (x, y, width, height);
+			// Tell GTK to expose the drawing area.
+			workspace.ActiveWorkspace.InvalidateWindowRect (areaToInvalidate);
+		}
+	}
+
+	private sealed class RenderSession : ILivePreviewSession
+	{
+		private readonly IChromeService chrome;
+		private readonly IWorkspaceService workspace;
+		private readonly BaseEffect effect;
+		private readonly Func<RenderHandle> start_render;
+		private Task restart = Task.CompletedTask;
+		internal RenderHandle CurrentRender { get; private set; } = null!; // NRT: assigned in Start()
+		internal bool IsActive { get; private set; } // False once canceled, no more restarts
+
+		internal RenderSession (
+			IChromeService chrome,
+			IWorkspaceService workspace,
+			BaseEffect effect,
+			Func<RenderHandle> startRender)
+		{
+			this.chrome = chrome;
+			this.workspace = workspace;
+			this.effect = effect;
+			start_render = startRender;
+		}
+
+		public Task<bool> LaunchSimpleEffectDialog (IAddinLocalizer? localizer = null)
+		{
+			return chrome.LaunchSimpleEffectDialog (
+				chrome.MainWindow,
+				effect,
+				localizer ?? new PintaLocalizer (),
+				workspace,
+				onChanged: _ => NotifyChanged ());
+		}
+
+		internal void Start ()
+		{
+			IsActive = true;
+			CurrentRender = start_render ();
+		}
+
+		public void NotifyChanged ()
+		{
+			if (!IsActive || !restart.IsCompleted) return;
+			restart = RestartAsync (); // New render clones effect, so it sees the changes
+		}
+
+		internal async Task<CompletionInfo> WaitForCompletionAsync ()
+		{
+			await restart;
+			return await CurrentRender.Completion;
+		}
+
+		internal void Cancel ()
+		{
+			IsActive = false;
+			CurrentRender.Cancel ();
+		}
+
+		internal async Task StopAsync ()
+		{
+			Cancel (); // Sets IsActive to false. Keep this in mind
+			await restart; // Ends without starting new render: IsActive is false
+			await CurrentRender.Completion;
+		}
+
+		private async Task RestartAsync () // Ensures no
+						   // two renders overlap in time
+		{
+			CurrentRender.Cancel ();
+			await CurrentRender.Completion;
+			if (IsActive)
+				CurrentRender = start_render ();
 		}
 	}
 }

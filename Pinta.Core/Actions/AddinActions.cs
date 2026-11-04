@@ -24,52 +24,53 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 using System;
-using Gtk;
 
-namespace Pinta.Core
+namespace Pinta.Core;
+
+public sealed class AddinActions
 {
-	public class AddinActions
+	private Gio.Menu addins_menu = null!; // NRT - Set by RegisterActions
+
+	public Command AddinManager { get; }
+
+	public AddinActions ()
 	{
-		private GLib.Menu addins_menu = null!; // NRT - Set by RegisterActions
-
-		public Command AddinManager { get; private set; }
-
-		public AddinActions ()
-		{
-			AddinManager = new Command ("AddinManager", Translations.GetString ("Add-in Manager"),
-						       null, Resources.Icons.AddinsManage);
-		}
-
-		/// <summary>
-		/// Adds a new item to the Add-ins menu.
-		/// </summary>
-		public void AddMenuItem (GLib.MenuItem item)
-		{
-			addins_menu.AppendItem (item);
-		}
-
-		/// <summary>
-		/// Removes an item from the Add-ins menu.
-		/// </summary>
-		public void RemoveMenuItem (GLib.MenuItem item)
-		{
-			// TODO-GTK3 (addins)
-			throw new NotImplementedException ();
-#if false
-			addins_menu.Remove (item);
-#endif
-		}
-
-		#region Initialization
-		public void RegisterActions (Gtk.Application app, GLib.Menu menu)
-		{
-			app.AddAction (AddinManager);
-			menu.AppendItem (AddinManager.CreateMenuItem ());
-
-			addins_menu = new GLib.Menu ();
-			menu.AppendSection (null, addins_menu);
-		}
-		#endregion
+		AddinManager = new Command (
+			"AddinManager",
+			Translations.GetString ("Add-in Manager..."),
+			null,
+			Resources.Icons.AddinsManage);
 	}
+
+	/// <summary>
+	/// Adds a new item to the Add-ins menu.
+	/// </summary>
+	public void AddMenuItem (Gio.MenuItem item)
+	{
+		addins_menu.AppendItem (item);
+	}
+
+	/// <summary>
+	/// Removes an item from the Add-ins menu.
+	/// </summary>
+	public void RemoveMenuItem (Gio.MenuItem item)
+	{
+		// TODO-GTK3 (addins)
+		throw new NotImplementedException ();
+#if false
+		addins_menu.Remove (item);
+#endif
+	}
+
+	#region Initialization
+	public void RegisterActions (Gtk.Application app, Gio.Menu menu)
+	{
+		app.AddCommand (AddinManager);
+		menu.AppendItem (AddinManager.CreateMenuItem ());
+
+		addins_menu = Gio.Menu.New ();
+		menu.AppendSection (null, addins_menu);
+	}
+	#endregion
 }
 

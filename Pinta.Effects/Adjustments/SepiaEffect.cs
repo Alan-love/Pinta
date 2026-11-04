@@ -8,43 +8,70 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Threading.Tasks;
 using Cairo;
 using Pinta.Core;
 
-namespace Pinta.Effects
+namespace Pinta.Effects;
+
+public sealed class SepiaEffect : BaseEffect
 {
-	public class SepiaEffect : BaseEffect
+	static readonly UnaryPixelOp desaturate = new UnaryPixelOps.Desaturate ();
+	static readonly UnaryPixelOp level = new UnaryPixelOps.Level (
+			ColorBgra.Black,
+			ColorBgra.White,
+			[1.2f, 1.0f, 0.8f],
+			ColorBgra.Black,
+			ColorBgra.White);
+
+	private readonly IChromeService chrome;
+	private readonly IWorkspaceService workspace;
+	public SepiaEffect (IServiceProvider services)
 	{
-		UnaryPixelOp desat = new UnaryPixelOps.Desaturate ();
-		UnaryPixelOp level = new UnaryPixelOps.Desaturate ();
+		chrome = services.GetService<IChromeService> ();
+		workspace = services.GetService<IWorkspaceService> ();
 
-		public override string Icon {
-			get { return "Menu.Adjustments.Sepia.png"; }
-		}
+		EffectData = new SepiaData ();
+	}
 
-		public override string Name {
-			get { return Translations.GetString ("Sepia"); }
-		}
+	public override bool IsConfigurable
+		=> true;
+	public SepiaData Data
+		=> (SepiaData) EffectData!;
 
-		public override string AdjustmentMenuKey {
-			get { return "E"; }
-		}
+	public override Task<bool> LaunchConfiguration ()
+		=> chrome.LaunchSimpleEffectDialog (this, workspace);
 
-		public SepiaEffect ()
-		{
-			desat = new UnaryPixelOps.Desaturate ();
-			level = new UnaryPixelOps.Level (
-				ColorBgra.Black,
-				ColorBgra.White,
-				new float[] { 1.2f, 1.0f, 0.8f },
-				ColorBgra.Black,
-				ColorBgra.White);
-		}
+	public sealed override bool IsTileable
+		=> true;
 
-		public override void Render (ImageSurface src, ImageSurface dest, Gdk.Rectangle[] rois)
-		{
-			desat.Apply (dest, src, rois);
-			level.Apply (dest, dest, rois);
-		}
+	public override string Icon
+		=> Resources.Icons.AdjustmentsSepia;
+
+	public override string Name
+		=> Translations.GetString ("Sepia");
+
+	public override string AdjustmentMenuKey
+		=> "E";
+
+	protected override void Render (ImageSurface source, ImageSurface destination, RectangleI roi)
+	{
+		desaturate.Apply (destination, source, roi);
+		level.Apply (destination, destination, roi);
+		double strength = Data.Strength / 100d;
+		if (strength == 1d) return;
+		ReadOnlySpan<ColorBgra> sourceData = source.GetReadOnlyPixelData ();
+		Span<ColorBgra> destinationData = destination.GetPixelData ();
+		foreach (var pixel in Tiling.GeneratePixelOffsets (roi, source.GetSize ()))
+			destinationData[pixel.memoryOffset] = ColorBgra.Lerp (
+				sourceData[pixel.memoryOffset],
+				destinationData[pixel.memoryOffset],
+				strength);
+	}
+
+	public sealed class SepiaData : EffectData
+	{
+		[MinimumValue (0), MaximumValue (100)]
+		public int Strength { get; set; } = 100;
 	}
 }
